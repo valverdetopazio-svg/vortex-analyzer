@@ -1,0 +1,6 @@
+git init
+git add
+git commit -m "Primeira versão"
+git branch -M main
+git remote add origin https://github.com/seu-user/vortex-analyzer.git
+git push -u origin main
