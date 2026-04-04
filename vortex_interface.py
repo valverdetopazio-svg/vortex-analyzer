@@ -35,42 +35,42 @@ SYMBOL_CONFIG = {
     "^DJI": {"nome":"DOW30","nome_exibicao":"Dow Jones","tipo":"Índices","emoji":"📈","base_fallback":39000},
     "AAPL": {"nome":"AAPL","nome_exibicao":"Apple","tipo":"Ações","emoji":"🍎","base_fallback":220},
     "NVDA": {"nome":"NVDA","nome_exibicao":"NVIDIA","tipo":"Ações","emoji":"🎮","base_fallback":120},
-    "MSFT": {"nome":"MSFT","nome_exibicao":"Microsoft","tipo":"Ações","emoji":"💻","base_fallback":420},
-    "GOOGL": {"nome":"GOOGL","nome_exibicao":"Google","tipo":"Ações","emoji":"🔍","base_fallback":140},
-}
-
-TIMEFRAMES = {
-    "5m": {"nome":"5min","expira":300,"atualiza":60},
-    "15m": {"nome":"15min","expira":900,"atualiza":120},
-    "1h": {"nome":"1hora","expira":3600,"atualiza":300},
-    "4h": {"nome":"4horas","expira":14400,"atualiza":900},
-    "1d": {"nome":"1dia","expira":86400,"atualiza":3600},
 }
 
 ATR_MULTIPLIER = {"Forex":{"stop":1.5,"tp":2.5},"Cripto":{"stop":2.5,"tp":4},"Commodities":{"stop":2,"tp":3.5},"Índices":{"stop":1.8,"tp":3},"Ações":{"stop":1.5,"tp":2.5}}
 SCORE_MINIMO = 65
 HISTORICO_FILE = "historico_sinais.json"
-SELECAO_FILE = "ativos_selecionados.json"
-
-# Carregar ativos selecionados
-def carregar_selecao():
-    if os.path.exists(SELECAO_FILE):
-        with open(SELECAO_FILE, "r") as f:
-            return json.load(f)
-    return {symbol: True for symbol in SYMBOL_CONFIG}  # Todos ativos por padrão
-
-def salvar_selecao(selecao):
-    with open(SELECAO_FILE, "w") as f:
-        json.dump(selecao, f, indent=2)
-
-ativos_selecionados = carregar_selecao()
-
-# Armazenamento
-sinais_ativos = {tf: {} for tf in TIMEFRAMES}
 
 # ============================================================
-# FUNÇÕES AUXILIARES
+# TIMEFRAME AUTOMÁTICO POR TIPO DE ATIVO
 # ============================================================
+def get_timeframe_by_type(tipo):
+    """Retorna o melhor timeframe baseado no tipo do ativo"""
+    timeframes = {
+        "Forex": "15m",      # Forex: 15 minutos (day trade)
+        "Cripto": "1h",      # Cripto: 1 hora (volatilidade alta)
+        "Commodities": "1h", # Commodities: 1 hora
+        "Índices": "1h",     # Índices: 1 hora
+        "Ações": "1d"        # Ações: 1 dia (swing trade)
+    }
+    return timeframes.get(tipo, "1h")
+
+def get_expiracao_by_tipo(tipo):
+    """Tempo de expiração do sinal baseado no tipo"""
+    expiracao = {
+        "Forex": 900,        # 15 minutos
+        "Cripto": 3600,      # 1 hora
+        "Commodities": 3600, # 1 hora
+        "Índices": 3600,     # 1 hora
+        "Ações": 86400       # 24 horas
+    }
+    return expiracao.get(tipo, 3600)
+
+# ============================================================
+# ARMAZENAMENTO
+# ============================================================
+sinais_ativos = {}  # {symbol: {"dados": sinal, "timestamp": datetime}}
+
 def carregar_historico():
     if os.path.exists(HISTORICO_FILE):
         with open(HISTORICO_FILE, "r") as f:
@@ -81,6 +81,9 @@ def salvar_historico(h):
     with open(HISTORICO_FILE, "w") as f:
         json.dump(h, f, indent=2)
 
+# ============================================================
+# INDICADORES TÉCNICOS
+# ============================================================
 def calcular_ema(closes, p):
     if len(closes) < p: return closes[-1]
     k = 2/(p+1)
@@ -120,7 +123,11 @@ def calcular_volume_ratio(volumes):
     media = sum(volumes[-21:-1])/20
     return volumes[-1]/media if media else 1
 
+# ============================================================
+# FONTES DE DADOS
+# ============================================================
 def fetch_dados(symbol, interval):
+    """Busca dados do Yahoo Finance"""
     try:
         yi = "1h" if interval=="4h" else interval
         rng = {"5m":"5d","15m":"5d","1h":"30d","4h":"60d","1d":"6mo"}.get(interval,"5d")
@@ -135,6 +142,7 @@ def fetch_dados(symbol, interval):
                 return {"closes":closes, "volumes":volumes or [1000000]*len(closes), "fonte":"yahoo"}
     except: pass
     
+    # Fallback simulado
     import random
     base = SYMBOL_CONFIG.get(symbol,{}).get("base_fallback",100)
     random.seed(int(time.time()/300) + hash(symbol+interval)%9999)
@@ -142,11 +150,16 @@ def fetch_dados(symbol, interval):
             "volumes":[random.uniform(500000,2000000) for _ in range(100)], 
             "fonte":"simulado"}
 
-def analisar(symbol, interval):
-    if not ativos_selecionados.get(symbol, True):
-        return None
+# ============================================================
+# ANÁLISE PRINCIPAL
+# ============================================================
+def analisar(symbol):
+    """Analisa um ativo com o timeframe automático baseado no tipo"""
+    cfg = SYMBOL_CONFIG[symbol]
+    tipo = cfg["tipo"]
+    intervalo = get_timeframe_by_type(tipo)
     
-    dados = fetch_dados(symbol, interval)
+    dados = fetch_dados(symbol, intervalo)
     closes, volumes, fonte = dados["closes"], dados["volumes"], dados["fonte"]
     if len(closes) < 35: return None
     
@@ -160,18 +173,23 @@ def analisar(symbol, interval):
     
     tendencia = "ALTA" if ema9 > ema21 > ema50 else "BAIXA" if ema9 < ema21 < ema50 else "LATERAL"
     
+    # Regras de sinal
     if rsi < 35 and macd_hist > 0 and tendencia != "BAIXA": sinal_bruto = "COMPRA"
     elif rsi > 65 and macd_hist < 0 and tendencia != "ALTA": sinal_bruto = "VENDA"
     elif rsi < 30: sinal_bruto = "COMPRA"
     elif rsi > 70: sinal_bruto = "VENDA"
     else: sinal_bruto = "NEUTRO"
     
+    # Cálculo do Score
     score = 0
     if sinal_bruto == "COMPRA":
         score += 30 if rsi < 30 else 22 if rsi < 40 else 12 if rsi < 50 else 0
     else:
         score += 30 if rsi > 70 else 22 if rsi > 60 else 12 if rsi > 50 else 0
-    score += 25 if (sinal_bruto=="COMPRA" and macd_hist>0) or (sinal_bruto=="VENDA" and macd_hist<0) else 10 if abs(macd_hist)<p*0.0005 else 0
+    
+    score += 25 if (sinal_bruto=="COMPRA" and macd_hist>0) or (sinal_bruto=="VENDA" and macd_hist<0) else 0
+    score += 10 if abs(macd_hist) < p*0.0005 else 0
+    
     bw = bbu - bbl
     if bw > 0:
         pos = (p - bbl)/bw
@@ -179,126 +197,127 @@ def analisar(symbol, interval):
             score += 25 if pos <= 0.1 else 15 if pos <= 0.3 else 8 if pos <= 0.5 else 0
         else:
             score += 25 if pos >= 0.9 else 15 if pos >= 0.7 else 8 if pos >= 0.5 else 0
+    
     score += 10 if vr >= 1.5 else 7 if vr >= 1.2 else 4 if vr >= 1 else 0
     
     sinal_final = sinal_bruto if score >= SCORE_MINIMO else "NEUTRO"
-    confianca = round(50 + score/2,1) if sinal_final != "NEUTRO" else round(score*0.6,1)
-    forca = round((max(0,(50-rsi)/50*100) if sinal_final=="COMPRA" else max(0,(rsi-50)/50*100))*0.6 + (100 if (sinal_final=="COMPRA" and macd_hist>0) or (sinal_final=="VENDA" and macd_hist<0) else 30)*0.4,1)
+    confianca = round(50 + score/2, 1) if sinal_final != "NEUTRO" else round(score*0.6, 1)
     
-    mult = ATR_MULTIPLIER.get(SYMBOL_CONFIG[symbol]["tipo"], {"stop":1.5,"tp":2.5})
-    sl = round(p - mult["stop"]*atr,6) if sinal_final=="COMPRA" else round(p + mult["stop"]*atr,6)
-    tp = round(p + mult["tp"]*atr,6) if sinal_final=="COMPRA" else round(p - mult["tp"]*atr,6)
+    # Força do sinal
+    if sinal_final == "COMPRA":
+        forca = round(max(0, (50 - rsi) / 50 * 100) * 0.6 + (100 if macd_hist > 0 else 30) * 0.4, 1)
+    elif sinal_final == "VENDA":
+        forca = round(max(0, (rsi - 50) / 50 * 100) * 0.6 + (100 if macd_hist < 0 else 30) * 0.4, 1)
+    else:
+        forca = 50
     
-    return {"preco":p, "rsi":rsi, "macd_hist":macd_hist, "volume_ratio":vr, "tendencia":tendencia,
-            "sinal":sinal_final, "score":score, "confianca":confianca, "forca":forca, 
-            "stop_loss":sl, "take_profit":tp, "fonte":fonte}
+    # Stop Loss e Take Profit
+    mult = ATR_MULTIPLIER.get(tipo, {"stop":1.5, "tp":2.5})
+    sl = round(p - mult["stop"] * atr, 6) if sinal_final == "COMPRA" else round(p + mult["stop"] * atr, 6)
+    tp = round(p + mult["tp"] * atr, 6) if sinal_final == "COMPRA" else round(p - mult["tp"] * atr, 6)
+    
+    return {
+        "preco": p, "rsi": rsi, "macd_hist": macd_hist,
+        "volume_ratio": vr, "tendencia": tendencia,
+        "sinal": sinal_final, "score": score, "confianca": confianca,
+        "forca": forca, "stop_loss": sl, "take_profit": tp,
+        "fonte": fonte, "timeframe_used": intervalo
+    }
 
+# ============================================================
+# PROCESSAMENTO
+# ============================================================
 def processar_todos():
-    for tf in TIMEFRAMES:
-        for symbol, cfg in SYMBOL_CONFIG.items():
-            if not ativos_selecionados.get(symbol, True):
-                if symbol in sinais_ativos[tf]:
-                    del sinais_ativos[tf][symbol]
-                continue
-                
-            analise = analisar(symbol, tf)
-            if not analise or analise["sinal"] == "NEUTRO":
-                if symbol in sinais_ativos[tf]:
-                    del sinais_ativos[tf][symbol]
-                continue
-            
-            agora = datetime.now()
-            sinal = {
-                "symbol": symbol, "nome": cfg["nome"], "nome_exibicao": cfg["nome_exibicao"],
-                "emoji": cfg["emoji"], "tipo": cfg["tipo"], "timeframe": tf,
-                "timeframe_nome": TIMEFRAMES[tf]["nome"], "preco": analise["preco"],
-                "sinal": analise["sinal"], "score": analise["score"], "forca": analise["forca"],
-                "confianca": analise["confianca"], "rsi": analise["rsi"],
-                "macd_hist": analise["macd_hist"], "volume_ratio": analise["volume_ratio"],
-                "tendencia": analise["tendencia"], "stop_loss": analise["stop_loss"],
-                "take_profit": analise["take_profit"], "entry": analise["preco"],
-                "fonte": analise["fonte"], "horario": agora.strftime("%H:%M:%S"),
-                "timestamp": agora
-            }
-            
-            if symbol in sinais_ativos[tf]:
-                if sinais_ativos[tf][symbol]["dados"]["sinal"] != sinal["sinal"]:
-                    historico = carregar_historico()
-                    sinal_antigo = sinais_ativos[tf][symbol]["dados"]
-                    sinal_antigo["data_fim"] = agora.strftime("%d/%m/%Y %H:%M:%S")
-                    sinal_antigo["status"] = "substituido"
-                    historico.append(sinal_antigo)
-                    salvar_historico(historico)
-                    sinais_ativos[tf][symbol] = {"dados": sinal, "timestamp": agora}
-            else:
-                sinais_ativos[tf][symbol] = {"dados": sinal, "timestamp": agora}
+    """Processa todos os ativos com timeframe automático"""
+    for symbol, cfg in SYMBOL_CONFIG.items():
+        analise = analisar(symbol)
+        if not analise or analise["sinal"] == "NEUTRO":
+            if symbol in sinais_ativos:
+                del sinais_ativos[symbol]
+            continue
+        
+        agora = datetime.now()
+        sinal = {
+            "symbol": symbol,
+            "nome": cfg["nome"],
+            "nome_exibicao": cfg["nome_exibicao"],
+            "emoji": cfg["emoji"],
+            "tipo": cfg["tipo"],
+            "timeframe": analise["timeframe_used"],
+            "preco": analise["preco"],
+            "sinal": analise["sinal"],
+            "score": analise["score"],
+            "forca": analise["forca"],
+            "confianca": analise["confianca"],
+            "rsi": analise["rsi"],
+            "macd_hist": analise["macd_hist"],
+            "volume_ratio": analise["volume_ratio"],
+            "tendencia": analise["tendencia"],
+            "stop_loss": analise["stop_loss"],
+            "take_profit": analise["take_profit"],
+            "entry": analise["preco"],
+            "fonte": analise["fonte"],
+            "horario": agora.strftime("%H:%M:%S"),
+            "timestamp": agora
+        }
+        
+        if symbol in sinais_ativos:
+            if sinais_ativos[symbol]["dados"]["sinal"] != sinal["sinal"]:
+                historico = carregar_historico()
+                sinal_antigo = sinais_ativos[symbol]["dados"]
+                sinal_antigo["data_fim"] = agora.strftime("%d/%m/%Y %H:%M:%S")
+                sinal_antigo["status"] = "substituido"
+                historico.append(sinal_antigo)
+                salvar_historico(historico)
+                sinais_ativos[symbol] = {"dados": sinal, "timestamp": agora}
+        else:
+            sinais_ativos[symbol] = {"dados": sinal, "timestamp": agora}
 
 def verificar_expiracao():
+    """Verifica sinais expirados baseado no tipo do ativo"""
     while True:
         agora = datetime.now()
-        for tf, config in TIMEFRAMES.items():
-            expira_em = config["expira"]
-            for symbol, item in list(sinais_ativos[tf].items()):
-                if (agora - item["timestamp"]).total_seconds() > expira_em:
-                    historico = carregar_historico()
-                    sinal = item["dados"]
-                    sinal["data_expiracao"] = agora.strftime("%d/%m/%Y %H:%M:%S")
-                    sinal["status"] = "expirado"
-                    historico.append(sinal)
-                    salvar_historico(historico)
-                    del sinais_ativos[tf][symbol]
+        for symbol, item in list(sinais_ativos.items()):
+            tipo = SYMBOL_CONFIG[symbol]["tipo"]
+            expira_em = get_expiracao_by_tipo(tipo)
+            
+            if (agora - item["timestamp"]).total_seconds() > expira_em:
+                historico = carregar_historico()
+                sinal = item["dados"]
+                sinal["data_expiracao"] = agora.strftime("%d/%m/%Y %H:%M:%S")
+                sinal["status"] = "expirado"
+                historico.append(sinal)
+                salvar_historico(historico)
+                del sinais_ativos[symbol]
         time.sleep(30)
 
+# Iniciar threads
 threading.Thread(target=verificar_expiracao, daemon=True).start()
 threading.Thread(target=lambda: [time.sleep(1), processar_todos()], daemon=True).start()
 
 # ============================================================
 # ENDPOINTS
 # ============================================================
-@app.get("/api/sinais/{timeframe}")
-async def get_sinais(timeframe: str):
-    if timeframe not in TIMEFRAMES:
-        return {"erro": "Timeframe inválido"}
-    
+@app.get("/api/sinais")
+async def get_sinais():
+    """Retorna todos os sinais ativos"""
     processar_todos()
     resultado = []
-    for item in sinais_ativos[timeframe].values():
+    for item in sinais_ativos.values():
         s = item["dados"].copy()
+        tipo = SYMBOL_CONFIG[s["symbol"]]["tipo"]
         tempo = (datetime.now() - item["timestamp"]).total_seconds()
-        restante = max(0, TIMEFRAMES[timeframe]["expira"] - tempo)
+        restante = max(0, get_expiracao_by_tipo(tipo) - tempo)
         s["expira_em"] = f"{int(restante//60)}min {int(restante%60)}s"
         resultado.append(s)
     return resultado
 
-@app.get("/api/ativos")
-async def get_ativos():
-    """Retorna lista de ativos com status de seleção"""
-    ativos = []
-    for symbol, cfg in SYMBOL_CONFIG.items():
-        ativos.append({
-            "symbol": symbol,
-            "nome": cfg["nome"],
-            "nome_exibicao": cfg["nome_exibicao"],
-            "tipo": cfg["tipo"],
-            "emoji": cfg["emoji"],
-            "selecionado": ativos_selecionados.get(symbol, True)
-        })
-    return ativos
-
-@app.post("/api/ativos/selecionar")
-async def selecionar_ativos(selecao: dict):
-    """Salva seleção de ativos"""
-    global ativos_selecionados
-    ativos_selecionados = selecao
-    salvar_selecao(selecao)
-    
-    # Limpar sinais de ativos desmarcados
-    for tf in sinais_ativos:
-        for symbol in list(sinais_ativos[tf].keys()):
-            if not selecao.get(symbol, True):
-                del sinais_ativos[tf][symbol]
-    
-    return {"ok": True}
+@app.get("/api/analise/{symbol}")
+async def get_analise_unica(symbol: str):
+    """Retorna análise de um ativo específico"""
+    if symbol not in SYMBOL_CONFIG:
+        return {"erro": "Símbolo não encontrado"}
+    return analisar(symbol)
 
 @app.get("/historico")
 async def get_historico():
@@ -313,249 +332,42 @@ async def confirmar(sinal: dict):
     return {"ok": True}
 
 # ============================================================
-# HTML COM FILTRO DE ATIVOS
+# HTML SIMPLES
 # ============================================================
 HTML = """<!DOCTYPE html>
 <html>
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width,initial-scale=1.0">
-<title>Valverde Trade IA - Selecione Ativos</title>
-<link href="https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
+<title>Valverde Trade IA</title>
 <style>
-:root{--bg:#0a0e1a;--card:#111827;--border:#1f2937;--text:#e5e7eb;--muted:#6b7280;--buy:#10b981;--sell:#ef4444;--accent:#3b82f6}
-*{margin:0;padding:0;box-sizing:border-box}
-body{font-family:'Space Mono',monospace;background:var(--bg);color:var(--text);padding:20px}
-.header{display:flex;justify-content:space-between;align-items:center;margin-bottom:20px;flex-wrap:wrap;gap:10px}
-h1{font-size:1.2rem;color:var(--accent)}
-.controls{display:flex;gap:10px;flex-wrap:wrap}
-.tf-btn,.refresh-btn,.filter-btn{padding:6px 12px;background:var(--card);border:1px solid var(--border);color:var(--muted);border-radius:6px;cursor:pointer;font-family:monospace;font-size:0.8rem}
-.tf-btn.active,.filter-btn.active{background:var(--accent);color:white;border-color:var(--accent)}
-.grid{display:grid;grid-template-columns:300px 1fr 1fr;gap:15px;margin-top:15px}
-@media(max-width:900px){.grid{grid-template-columns:1fr}}
-.panel{background:var(--card);border-radius:12px;border:1px solid var(--border);overflow:hidden}
-.panel-header{padding:12px 15px;background:rgba(0,0,0,0.2);border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center}
-.panel-body{padding:12px;max-height:70vh;overflow-y:auto}
-.ativos-lista{display:flex;flex-direction:column;gap:8px}
-.ativo-item{display:flex;align-items:center;gap:8px;padding:6px;border-radius:6px;cursor:pointer;background:rgba(0,0,0,0.2)}
-.ativo-item:hover{background:rgba(59,130,246,0.1)}
-.ativo-item input{cursor:pointer;width:18px;height:18px}
-.ativo-info{flex:1}
-.ativo-nome{font-size:0.8rem;font-weight:bold}
-.ativo-codigo{font-size:0.6rem;color:var(--muted)}
-.tipo-badge{font-size:0.55rem;padding:2px 5px;border-radius:3px;background:var(--accent);color:white}
-.sinal-card{background:rgba(0,0,0,0.2);border-radius:8px;padding:12px;margin-bottom:10px;cursor:pointer;border-left:3px solid var(--muted)}
-.sinal-card.buy{border-left-color:var(--buy)}
-.sinal-card.sell{border-left-color:var(--sell)}
-.card-header{display:flex;justify-content:space-between;margin-bottom:8px}
-.asset{font-weight:bold;font-size:0.9rem}
-.asset-code{font-size:0.7rem;color:var(--muted)}
-.badge{padding:2px 8px;border-radius:4px;font-size:0.7rem;font-weight:bold}
-.badge.buy{background:rgba(16,185,129,0.2);color:var(--buy)}
-.badge.sell{background:rgba(239,68,68,0.2);color:var(--sell)}
-.precos{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin:8px 0;font-size:0.7rem}
-.metrics{display:flex;gap:10px;margin:8px 0;font-size:0.65rem;color:var(--muted)}
-.time{font-size:0.6rem;color:var(--muted);margin-top:6px;padding-top:6px;border-top:1px solid var(--border)}
-.hist-item{background:rgba(0,0,0,0.2);border-radius:6px;padding:8px;margin-bottom:6px;font-size:0.7rem}
-.empty{text-align:center;padding:40px;color:var(--muted)}
-.selecionar-todos{display:flex;gap:8px;margin-bottom:12px;padding-bottom:8px;border-bottom:1px solid var(--border)}
+body{font-family:monospace;background:#0a0e1a;color:#e5e7eb;padding:20px}
+.card{background:#111827;border-radius:8px;padding:15px;margin-bottom:10px;border-left:3px solid}
+.buy{border-left-color:#10b981}
+.sell{border-left-color:#ef4444}
+.header{display:flex;justify-content:space-between;margin-bottom:20px}
+button{background:#1f2937;color:white;border:none;padding:5px 10px;cursor:pointer}
 </style>
 </head>
 <body>
-<div class="header">
-<h1>🔮 VALVERDE TRADE IA - SELECIONE ATIVOS</h1>
-<div class="controls">
-<div class="tf-buttons" id="tf-buttons"></div>
-<button class="refresh-btn" onclick="carregarTudo()">⟳ ATUALIZAR</button>
-</div>
-</div>
-<div class="grid">
-<div class="panel">
-<div class="panel-header"><span>🎯 ATIVOS MONITORADOS</span><span id="count-ativos">-</span></div>
-<div class="panel-body">
-<div class="selecionar-todos">
-<button class="filter-btn" onclick="selecionarTodos(true)">✓ SELECIONAR TODOS</button>
-<button class="filter-btn" onclick="selecionarTodos(false)">✗ DESMARCAR TODOS</button>
-</div>
-<div id="ativos-lista" class="ativos-lista">Carregando...</div>
-</div>
-</div>
-<div class="panel">
-<div class="panel-header"><span>📊 SINAIS ATIVOS</span><span id="count-sinais">-</span></div>
-<div class="panel-body" id="sinais-container">Carregando...</div>
-</div>
-<div class="panel">
-<div class="panel-header"><span>📜 HISTÓRICO</span><span id="count-hist">-</span></div>
-<div class="panel-body" id="historico-container">Carregando...</div>
-</div>
-</div>
+<div class="header"><h1>VALVERDE TRADE IA</h1><button onclick="location.reload()">⟳ ATUALIZAR</button></div>
+<div id="sinais"></div>
 <script>
-let timeframeAtual = '15m';
-let ativosLista = [];
-const timeframes = {'5m':'5min','15m':'15min','1h':'1hora','4h':'4horas','1d':'1dia'};
-
-function criarBotoes() {
-    const container = document.getElementById('tf-buttons');
-    container.innerHTML = Object.keys(timeframes).map(tf => 
-        `<button class="tf-btn ${tf===timeframeAtual?'active':''}" onclick="mudarTimeframe('${tf}')">${timeframes[tf]}</button>`
-    ).join('');
-}
-
-async function carregarAtivos() {
-    try {
-        const r = await fetch('/api/ativos');
-        ativosLista = await r.json();
-        renderAtivos();
-    } catch(e) { console.error(e); }
-}
-
-function renderAtivos() {
-    const tipos = [...new Set(ativosLista.map(a => a.tipo))];
-    let html = '';
-    
-    for(const tipo of tipos) {
-        const ativosTipo = ativosLista.filter(a => a.tipo === tipo);
-        html += `<div style="margin-bottom:12px"><strong style="color:var(--accent);font-size:0.7rem">${tipo.toUpperCase()}</strong>`;
-        ativosTipo.forEach(a => {
-            html += `
-                <div class="ativo-item" onclick="toggleAtivo('${a.symbol}')">
-                    <input type="checkbox" ${a.selecionado ? 'checked' : ''} onclick="event.stopPropagation();toggleAtivo('${a.symbol}')">
-                    <div class="ativo-info">
-                        <div class="ativo-nome">${a.emoji} ${a.nome_exibicao}</div>
-                        <div class="ativo-codigo">${a.nome}</div>
-                    </div>
-                    <span class="tipo-badge">${a.tipo}</span>
-                </div>
-            `;
-        });
-        html += `</div>`;
-    }
-    
-    document.getElementById('ativos-lista').innerHTML = html;
-    document.getElementById('count-ativos').innerText = ativosLista.filter(a => a.selecionado).length;
-}
-
-async function toggleAtivo(symbol) {
-    const ativo = ativosLista.find(a => a.symbol === symbol);
-    if(ativo) {
-        ativo.selecionado = !ativo.selecionado;
-        await salvarSelecao();
-        renderAtivos();
-        carregarSinais(); // Recarregar sinais com nova seleção
-    }
-}
-
-async function selecionarTodos(selecionar) {
-    ativosLista.forEach(a => a.selecionado = selecionar);
-    await salvarSelecao();
-    renderAtivos();
-    carregarSinais();
-}
-
-async function salvarSelecao() {
-    const selecao = {};
-    ativosLista.forEach(a => selecao[a.symbol] = a.selecionado);
-    await fetch('/api/ativos/selecionar', {
-        method: 'POST',
-        headers: {'Content-Type':'application/json'},
-        body: JSON.stringify(selecao)
-    });
-}
-
-function fmtPreco(v,tipo) {
-    if(!v) return '—';
-    let n = Number(v);
-    if(tipo==='Forex') return n.toFixed(5);
-    if(n>10000) return n.toLocaleString();
-    return n.toFixed(2);
-}
-
-function renderSinais(sinais) {
-    document.getElementById('count-sinais').innerText = sinais.length;
-    if(!sinais.length) {
-        document.getElementById('sinais-container').innerHTML = '<div class="empty">📡 Nenhum sinal ativo</div>';
-        return;
-    }
-    document.getElementById('sinais-container').innerHTML = sinais.map(s => `
-        <div class="sinal-card ${s.sinal==='COMPRA'?'buy':'sell'}" onclick="confirmarSinal(${JSON.stringify(s)})">
-            <div class="card-header">
-                <div><span class="asset">${s.emoji} ${s.nome_exibicao}</span><br><span class="asset-code">${s.nome} · ${s.timeframe_nome}</span></div>
-                <span class="badge ${s.sinal==='COMPRA'?'buy':'sell'}">${s.sinal==='COMPRA'?'▲ COMPRA':'▼ VENDA'}</span>
-            </div>
-            <div class="precos">
-                <div>📈 Entry<br><strong>${fmtPreco(s.entry,s.tipo)}</strong></div>
-                <div>🛑 Stop<br><strong style="color:var(--sell)">${fmtPreco(s.stop_loss,s.tipo)}</strong></div>
-                <div>🎯 TP<br><strong style="color:var(--buy)">${fmtPreco(s.take_profit,s.tipo)}</strong></div>
-            </div>
-            <div class="metrics">
-                <span>🎯 Score: ${s.score}</span>
-                <span>💪 Força: ${s.forca}%</span>
-                <span>📊 RSI: ${s.rsi}</span>
-            </div>
-            <div class="time">
-                🕐 ${s.horario} | ⏱ Expira: ${s.expira_em} | 📡 ${s.fonte}
-            </div>
+async function carregar(){
+    const r=await fetch('/api/sinais');
+    const dados=await r.json();
+    const html=dados.map(s=>`
+        <div class="card ${s.sinal==='COMPRA'?'buy':'sell'}">
+            <div><b>${s.emoji} ${s.nome_exibicao}</b> (${s.nome}) - ${s.timeframe}</div>
+            <div>Sinal: <b>${s.sinal}</b> | Score: ${s.score} | Conf: ${s.confianca}%</div>
+            <div>Entry: ${s.entry} | Stop: ${s.stop_loss} | TP: ${s.take_profit}</div>
+            <div>RSI: ${s.rsi} | Tendência: ${s.tendencia} | Expira: ${s.expira_em}</div>
+            <small>🕐 ${s.horario} | 📡 ${s.fonte}</small>
         </div>
     `).join('');
+    document.getElementById('sinais').innerHTML=html||'<div>Sem sinais ativos</div>';
 }
-
-function renderHistorico(hist) {
-    document.getElementById('count-hist').innerText = hist.length;
-    if(!hist.length) {
-        document.getElementById('historico-container').innerHTML = '<div class="empty">📋 Nenhum registro</div>';
-        return;
-    }
-    document.getElementById('historico-container').innerHTML = hist.slice().reverse().map(h => `
-        <div class="hist-item">
-            <strong>${h.emoji} ${h.nome_exibicao}</strong> (${h.timeframe_nome}) - ${h.sinal}<br>
-            Entry: ${fmtPreco(h.entry,h.tipo)} | SL: ${fmtPreco(h.stop_loss,h.tipo)} | TP: ${fmtPreco(h.take_profit,h.tipo)}<br>
-            Score: ${h.score} | Status: ${h.status || 'pendente'}<br>
-            <small>🕐 ${h.horario || h.data_fim || h.confirmado_em || '-'}</small>
-        </div>
-    `).join('');
-}
-
-async function mudarTimeframe(tf) {
-    timeframeAtual = tf;
-    criarBotoes();
-    await carregarSinais();
-}
-
-async function carregarSinais() {
-    try {
-        const r = await fetch(`/api/sinais/${timeframeAtual}`);
-        const data = await r.json();
-        renderSinais(data);
-    } catch(e) { console.error(e); }
-}
-
-async function carregarHistorico() {
-    try {
-        const r = await fetch('/historico');
-        const data = await r.json();
-        renderHistorico(data);
-    } catch(e) { console.error(e); }
-}
-
-async function confirmarSinal(s) {
-    const res = confirm(`Confirmar ${s.nome_exibicao} (${s.timeframe_nome}) - ${s.sinal}?\\nOK = WIN | Cancelar = LOSS`);
-    if(res !== null) {
-        await fetch('/confirmar', {
-            method: 'POST',
-            headers: {'Content-Type':'application/json'},
-            body: JSON.stringify({...s, confirmado: res?'win':'loss', status: res?'ganho':'perdido'})
-        });
-        carregarHistorico();
-    }
-}
-
-async function carregarTudo() {
-    await Promise.all([carregarAtivos(), carregarSinais(), carregarHistorico()]);
-}
-
-criarBotoes();
-carregarTudo();
-setInterval(carregarSinais, 60000);
+carregar();
+setInterval(carregar,60000);
 </script>
 </body>
 </html>"""
