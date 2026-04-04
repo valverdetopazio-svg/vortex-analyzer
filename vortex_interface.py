@@ -2,71 +2,53 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 from datetime import datetime, timedelta
-import os
-import json
-import requests
-import time
-import threading
+import os, json, requests, time, threading
 from tradingview_ta import TA_Handler, Interval
 
-# ============================================================
-# INICIALIZAÇÃO DO FASTAPI (DEVE SER A PRIMEIRA COISA)
-# ============================================================
 app = FastAPI(title="Valverde Trade IA")
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"]
-)
+app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True,
+                   allow_methods=["*"], allow_headers=["*"])
 
 # ============================================================
-# CATÁLOGO DE ATIVOS
+# CONFIGURAÇÃO
 # ============================================================
 SYMBOL_CONFIG = {
-    "EURUSD=X": {"nome":"EUR/USD","nome_exibicao":"Euro / Dólar","tipo":"Forex","emoji":"💶","base_fallback":1.085},
-    "USDJPY=X": {"nome":"USD/JPY","nome_exibicao":"Dólar / Iene","tipo":"Forex","emoji":"💴","base_fallback":149.5},
-    "GBPUSD=X": {"nome":"GBP/USD","nome_exibicao":"Libra / Dólar","tipo":"Forex","emoji":"💷","base_fallback":1.265},
-    "USDCHF=X": {"nome":"USD/CHF","nome_exibicao":"Dólar / Franco CH","tipo":"Forex","emoji":"🇨🇭","base_fallback":0.895},
+    "EURUSD=X": {"nome":"EUR/USD","nome_exibicao":"Euro/Dólar","tipo":"Forex","emoji":"💶","base_fallback":1.085},
+    "USDJPY=X": {"nome":"USD/JPY","nome_exibicao":"Dólar/Iene","tipo":"Forex","emoji":"💴","base_fallback":149.5},
+    "GBPUSD=X": {"nome":"GBP/USD","nome_exibicao":"Libra/Dólar","tipo":"Forex","emoji":"💷","base_fallback":1.265},
+    "USDCHF=X": {"nome":"USD/CHF","nome_exibicao":"Dólar/Franco","tipo":"Forex","emoji":"🇨🇭","base_fallback":0.895},
     "AUDUSD=X": {"nome":"AUD/USD","nome_exibicao":"Dólar Australiano","tipo":"Forex","emoji":"🦘","base_fallback":0.655},
-    "USDCAD=X": {"nome":"USD/CAD","nome_exibicao":"Dólar / CAD","tipo":"Forex","emoji":"🍁","base_fallback":1.365},
+    "USDCAD=X": {"nome":"USD/CAD","nome_exibicao":"Dólar/CAD","tipo":"Forex","emoji":"🍁","base_fallback":1.365},
     "NZDUSD=X": {"nome":"NZD/USD","nome_exibicao":"Dólar NZ","tipo":"Forex","emoji":"🥝","base_fallback":0.605},
-    "GC=F": {"nome":"XAUUSD","nome_exibicao":"Ouro","tipo":"Commodities","emoji":"🥇","base_fallback":2350.0},
+    "GC=F": {"nome":"XAUUSD","nome_exibicao":"Ouro","tipo":"Commodities","emoji":"🥇","base_fallback":2350},
     "SI=F": {"nome":"XAGUSD","nome_exibicao":"Prata","tipo":"Commodities","emoji":"🥈","base_fallback":28.5},
-    "PL=F": {"nome":"XPTUSD","nome_exibicao":"Platina","tipo":"Commodities","emoji":"⚗️","base_fallback":960.0},
-    "CL=F": {"nome":"WTI","nome_exibicao":"Petróleo WTI","tipo":"Commodities","emoji":"🛢️","base_fallback":78.0},
-    "BZ=F": {"nome":"BRENT","nome_exibicao":"Petróleo Brent","tipo":"Commodities","emoji":"⛽","base_fallback":82.0},
-    "NG=F": {"nome":"NATGAS","nome_exibicao":"Gás Natural","tipo":"Commodities","emoji":"🔥","base_fallback":2.8},
-    "BTC-USD": {"nome":"BTC","nome_exibicao":"Bitcoin","tipo":"Cripto","emoji":"₿","base_fallback":66800,"binance":"BTCUSDT"},
-    "ETH-USD": {"nome":"ETH","nome_exibicao":"Ethereum","tipo":"Cripto","emoji":"⟠","base_fallback":3300,"binance":"ETHUSDT"},
-    "^GDAXI": {"nome":"DAX","nome_exibicao":"DAX Alemanha","tipo":"Índices","emoji":"🇩🇪","base_fallback":18200},
-    "^FTSE": {"nome":"FTSE100","nome_exibicao":"FTSE 100 UK","tipo":"Índices","emoji":"🇬🇧","base_fallback":8200},
-    "^N225": {"nome":"NIKKEI","nome_exibicao":"Nikkei 225","tipo":"Índices","emoji":"🇯🇵","base_fallback":38500},
+    "CL=F": {"nome":"WTI","nome_exibicao":"Petróleo","tipo":"Commodities","emoji":"🛢️","base_fallback":78},
+    "BTC-USD": {"nome":"BTC","nome_exibicao":"Bitcoin","tipo":"Cripto","emoji":"₿","base_fallback":66800},
+    "ETH-USD": {"nome":"ETH","nome_exibicao":"Ethereum","tipo":"Cripto","emoji":"⟠","base_fallback":3300},
     "^GSPC": {"nome":"SP500","nome_exibicao":"S&P 500","tipo":"Índices","emoji":"🇺🇸","base_fallback":5200},
-    "^IXIC": {"nome":"NASDAQ","nome_exibicao":"NASDAQ 100","tipo":"Índices","emoji":"💻","base_fallback":16400},
-    "^DJI": {"nome":"DOW30","nome_exibicao":"Dow Jones","tipo":"Índices","emoji":"📈","base_fallback":39000},
+    "^IXIC": {"nome":"NASDAQ","nome_exibicao":"NASDAQ","tipo":"Índices","emoji":"💻","base_fallback":16400},
     "AAPL": {"nome":"AAPL","nome_exibicao":"Apple","tipo":"Ações","emoji":"🍎","base_fallback":220},
     "NVDA": {"nome":"NVDA","nome_exibicao":"NVIDIA","tipo":"Ações","emoji":"🎮","base_fallback":120},
 }
 
-ATR_MULTIPLIER = {
-    "Forex": {"stop": 1.5, "tp": 2.5},
-    "Cripto": {"stop": 2.5, "tp": 4.0},
-    "Commodities": {"stop": 2.0, "tp": 3.5},
-    "Índices": {"stop": 1.8, "tp": 3.0},
-    "Ações": {"stop": 1.5, "tp": 2.5},
+TIMEFRAMES = {
+    "5m": {"nome":"5min","expira":300,"atualiza":60},
+    "15m": {"nome":"15min","expira":900,"atualiza":120},
+    "1h": {"nome":"1hora","expira":3600,"atualiza":300},
+    "4h": {"nome":"4horas","expira":14400,"atualiza":900},
+    "1d": {"nome":"1dia","expira":86400,"atualiza":3600},
 }
 
+ATR_MULTIPLIER = {"Forex":{"stop":1.5,"tp":2.5},"Cripto":{"stop":2.5,"tp":4},"Commodities":{"stop":2,"tp":3.5},"Índices":{"stop":1.8,"tp":3},"Ações":{"stop":1.5,"tp":2.5}}
 SCORE_MINIMO = 65
 HISTORICO_FILE = "historico_sinais.json"
-sinais_ativos = {}
+
+# Armazenamento: sinais_ativos[timeframe][symbol] = {"dados":{}, "timestamp":datetime}
+sinais_ativos = {tf: {} for tf in TIMEFRAMES}
 
 # ============================================================
 # FUNÇÕES AUXILIARES
 # ============================================================
-
 def carregar_historico():
     if os.path.exists(HISTORICO_FILE):
         with open(HISTORICO_FILE, "r") as f:
@@ -77,395 +59,371 @@ def salvar_historico(h):
     with open(HISTORICO_FILE, "w") as f:
         json.dump(h, f, indent=2)
 
-def mover_sinal_para_historico(symbol, sinal_data):
-    historico = carregar_historico()
-    sinal_data["data_confirmacao"] = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
-    sinal_data["status"] = "expirado"
-    historico.append(sinal_data)
-    salvar_historico(historico)
-    if symbol in sinais_ativos:
-        del sinais_ativos[symbol]
-
-def verificar_sinais_expirados():
-    while True:
-        try:
-            agora = datetime.now()
-            expirados = []
-            for symbol, item in sinais_ativos.items():
-                if (agora - item["timestamp"]).total_seconds() > 900:
-                    expirados.append((symbol, item["dados"]))
-            for symbol, sinal in expirados:
-                mover_sinal_para_historico(symbol, sinal)
-            time.sleep(30)
-        except Exception as e:
-            print(f"Erro: {e}")
-            time.sleep(60)
-
-# ============================================================
-# INDICADORES TÉCNICOS
-# ============================================================
-
-def calcular_ema(closes, periodo):
-    if len(closes) < periodo:
-        return closes[-1]
-    k = 2 / (periodo + 1)
-    ema = sum(closes[:periodo]) / periodo
-    for p in closes[periodo:]:
-        ema = p * k + ema * (1 - k)
+def calcular_ema(closes, p):
+    if len(closes) < p: return closes[-1]
+    k = 2/(p+1)
+    ema = sum(closes[:p])/p
+    for val in closes[p:]: ema = val*k + ema*(1-k)
     return ema
 
-def calcular_rsi(closes, periodo=14):
-    if len(closes) < periodo + 1:
-        return 50.0
-    g = p = 0.0
-    for i in range(-periodo, 0):
+def calcular_rsi(closes, p=14):
+    if len(closes) < p+1: return 50
+    g = p = 0
+    for i in range(-p,0):
         d = closes[i] - closes[i-1]
-        if d > 0:
-            g += d
-        else:
-            p += abs(d)
-    if p == 0:
-        return 100.0
-    return round(100 - (100 / (1 + g/p)), 1)
+        if d > 0: g += d
+        else: p += abs(d)
+    return 100 - (100/(1+g/p)) if p > 0 else 100
 
-def calcular_macd(closes, fast=12, slow=26, sp=9):
-    if len(closes) < slow + sp:
-        return 0.0, 0.0, 0.0
-    mv = []
-    for i in range(slow - 1, len(closes)):
-        mv.append(calcular_ema(closes[:i+1], fast) - calcular_ema(closes[:i+1], slow))
-    if len(mv) < sp:
-        return mv[-1], mv[-1], 0.0
-    ml = mv[-1]
-    sl = calcular_ema(mv, sp)
-    return round(ml, 6), round(sl, 6), round(ml - sl, 6)
+def calcular_macd(closes):
+    if len(closes) < 35: return 0,0,0
+    ema12 = calcular_ema(closes,12)
+    ema26 = calcular_ema(closes,26)
+    return ema12, ema26, ema12 - ema26
 
-def calcular_bollinger(closes, periodo=20, dev=2):
-    if len(closes) < periodo:
-        p = closes[-1]
-        return p, p, p
-    r = closes[-periodo:]
-    ma = sum(r) / periodo
-    std = (sum((c - ma)**2 for c in r) / periodo) ** 0.5
-    return round(ma + dev*std, 6), round(ma, 6), round(ma - dev*std, 6)
+def calcular_bollinger(closes):
+    if len(closes) < 20: return closes[-1], closes[-1], closes[-1]
+    r = closes[-20:]
+    ma = sum(r)/20
+    std = (sum((c-ma)**2 for c in r)/20)**0.5
+    return ma+2*std, ma, ma-2*std
 
-def calcular_atr(closes, periodo=14):
-    if len(closes) < 2:
-        return closes[-1] * 0.005
-    v = [abs(closes[i] - closes[i-1]) for i in range(max(-periodo, -(len(closes)-1)), 0)]
-    return sum(v)/len(v) if v else closes[-1] * 0.005
+def calcular_atr(closes):
+    if len(closes) < 2: return closes[-1]*0.005
+    v = [abs(closes[i]-closes[i-1]) for i in range(-14,0)]
+    return sum(v)/len(v) if v else closes[-1]*0.005
 
-def calcular_volume_ratio(volumes, periodo=20):
-    if not volumes or len(volumes) < 2:
-        return 1.0
-    media = sum(volumes[-periodo-1:-1]) / min(periodo, len(volumes)-1)
-    return round(volumes[-1] / media, 2) if media else 1.0
+def calcular_volume_ratio(volumes):
+    if len(volumes) < 21: return 1
+    media = sum(volumes[-21:-1])/20
+    return volumes[-1]/media if media else 1
 
-def calcular_forca(rsi, macd_hist, sinal):
-    if sinal == "COMPRA":
-        rsi_f = max(0, (50 - rsi) / 50 * 100)
-        mac_f = 100 if macd_hist > 0 else 30
-    elif sinal == "VENDA":
-        rsi_f = max(0, (rsi - 50) / 50 * 100)
-        mac_f = 100 if macd_hist < 0 else 30
-    else:
-        rsi_f = mac_f = 50
-    return round(rsi_f * 0.6 + mac_f * 0.4, 1)
-
-def calcular_score(rsi, macd_hist, preco, bb_upper, bb_lower, sinal, volume_ratio, mtf_ok):
-    score = 0
-    if sinal == "COMPRA":
-        if rsi < 30: score += 30
-        elif rsi < 40: score += 22
-        elif rsi < 50: score += 12
-    elif sinal == "VENDA":
-        if rsi > 70: score += 30
-        elif rsi > 60: score += 22
-        elif rsi > 50: score += 12
-    if sinal == "COMPRA" and macd_hist > 0: score += 25
-    elif sinal == "VENDA" and macd_hist < 0: score += 25
-    elif abs(macd_hist) < preco * 0.0005: score += 10
-    bw = bb_upper - bb_lower
-    if bw > 0:
-        pos = (preco - bb_lower) / bw
-        if sinal == "COMPRA":
-            if pos <= 0.1: score += 25
-            elif pos <= 0.3: score += 15
-            elif pos <= 0.5: score += 8
-        elif sinal == "VENDA":
-            if pos >= 0.9: score += 25
-            elif pos >= 0.7: score += 15
-            elif pos >= 0.5: score += 8
-    if volume_ratio >= 1.5: score += 10
-    elif volume_ratio >= 1.2: score += 7
-    elif volume_ratio >= 1.0: score += 4
-    if mtf_ok: score += 10
-    return min(score, 100)
-
-# ============================================================
-# FONTES DE DADOS
-# ============================================================
-
-def fetch_yahoo(symbol, interval):
+def fetch_dados(symbol, interval):
+    """Busca dados Yahoo Finance"""
     try:
-        yi = "1h" if interval == "4h" else interval
-        rng = {"5m":"5d","15m":"5d","30m":"5d","1h":"30d","4h":"60d","1d":"6mo"}.get(interval, "5d")
+        yi = "1h" if interval=="4h" else interval
+        rng = {"5m":"5d","15m":"5d","1h":"30d","4h":"60d","1d":"6mo"}.get(interval,"5d")
         url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?interval={yi}&range={rng}"
         r = requests.get(url, headers={"User-Agent":"Mozilla/5.0"}, timeout=10)
         if r.status_code == 200:
-            res = r.json().get("chart", {}).get("result", [])
-            if res:
-                q = res[0].get("indicators", {}).get("quote", [{}])[0]
-                closes = [c for c in q.get("close", []) if c is not None]
-                volumes = [v for v in q.get("volume", []) if v is not None]
-                if closes:
-                    if not volumes or max(volumes) == 0:
-                        volumes = [1000000.0] * len(closes)
-                    return {"closes": closes, "volumes": volumes, "fonte": "yahoo"}
-    except Exception as e:
-        print(f"Yahoo error: {e}")
-    return None
-
-def fetch_fallback(symbol, interval):
+            res = r.json().get("chart",{}).get("result",[{}])[0]
+            q = res.get("indicators",{}).get("quote",[{}])[0]
+            closes = [c for c in q.get("close",[]) if c]
+            volumes = [v for v in q.get("volume",[]) if v]
+            if closes:
+                return {"closes":closes, "volumes":volumes or [1000000]*len(closes), "fonte":"yahoo"}
+    except: pass
+    
+    # Fallback simulado
     import random
-    base = SYMBOL_CONFIG.get(symbol, {}).get("base_fallback", 100.0)
-    random.seed(int(time.time()/300) + hash(symbol + interval) % 9999)
-    closes = [base * (1 + random.uniform(-0.015, 0.015)) for _ in range(100)]
-    volumes = [random.uniform(500000, 2000000) for _ in range(100)]
-    return {"closes": closes, "volumes": volumes, "fonte": "simulado"}
+    base = SYMBOL_CONFIG.get(symbol,{}).get("base_fallback",100)
+    random.seed(int(time.time()/300) + hash(symbol+interval)%9999)
+    return {"closes":[base*(1+random.uniform(-0.02,0.02)) for _ in range(100)], 
+            "volumes":[random.uniform(500000,2000000) for _ in range(100)], 
+            "fonte":"simulado"}
 
-def fetch_candles(symbol, interval):
-    d = fetch_yahoo(symbol, interval)
-    if d:
-        return d
-    return fetch_fallback(symbol, interval)
-
-# ============================================================
-# ANÁLISE PRINCIPAL
-# ============================================================
-
-def analisar_closes(symbol, closes, volumes):
-    cfg = SYMBOL_CONFIG.get(symbol, {})
-    tipo = cfg.get("tipo", "Ações")
+def analisar(symbol, interval):
+    dados = fetch_dados(symbol, interval)
+    closes, volumes, fonte = dados["closes"], dados["volumes"], dados["fonte"]
+    if len(closes) < 35: return None
+    
     p = closes[-1]
     rsi = calcular_rsi(closes)
     _, _, macd_hist = calcular_macd(closes)
     bbu, _, bbl = calcular_bollinger(closes)
     atr = calcular_atr(closes)
-    vr = calcular_volume_ratio(volumes)
-    ema9 = calcular_ema(closes, 9)
-    ema21 = calcular_ema(closes, 21)
-    ema50 = calcular_ema(closes, 50)
+    vr = round(calcular_volume_ratio(volumes),2)
+    ema9, ema21, ema50 = calcular_ema(closes,9), calcular_ema(closes,21), calcular_ema(closes,50)
     
-    if ema9 > ema21 > ema50:
-        tendencia = "ALTA"
-    elif ema9 < ema21 < ema50:
-        tendencia = "BAIXA"
+    tendencia = "ALTA" if ema9 > ema21 > ema50 else "BAIXA" if ema9 < ema21 < ema50 else "LATERAL"
+    
+    if rsi < 35 and macd_hist > 0 and tendencia != "BAIXA": sinal_bruto = "COMPRA"
+    elif rsi > 65 and macd_hist < 0 and tendencia != "ALTA": sinal_bruto = "VENDA"
+    elif rsi < 30: sinal_bruto = "COMPRA"
+    elif rsi > 70: sinal_bruto = "VENDA"
+    else: sinal_bruto = "NEUTRO"
+    
+    # Score
+    score = 0
+    if sinal_bruto == "COMPRA":
+        score += 30 if rsi < 30 else 22 if rsi < 40 else 12 if rsi < 50 else 0
     else:
-        tendencia = "LATERAL"
-    
-    if rsi < 35 and macd_hist > 0 and tendencia != "BAIXA":
-        sinal_bruto = "COMPRA"
-    elif rsi > 65 and macd_hist < 0 and tendencia != "ALTA":
-        sinal_bruto = "VENDA"
-    elif rsi < 30:
-        sinal_bruto = "COMPRA"
-    elif rsi > 70:
-        sinal_bruto = "VENDA"
-    else:
-        sinal_bruto = "NEUTRO"
-    
-    return {
-        "preco": round(p, 6), "rsi": rsi, "macd_hist": macd_hist,
-        "bb_upper": bbu, "bb_lower": bbl, "atr": atr,
-        "volume_ratio": vr, "ema9": round(ema9, 6), "ema21": round(ema21, 6),
-        "ema50": round(ema50, 6), "tendencia": tendencia,
-        "sinal_bruto": sinal_bruto, "tipo": tipo,
-    }
-
-def get_analysis(symbol, interval="15m"):
-    dados = fetch_candles(symbol, interval)
-    closes = dados["closes"]
-    vols = dados["volumes"]
-    fonte = dados["fonte"]
-    
-    if len(closes) < 35:
-        return None
-    
-    a = analisar_closes(symbol, closes, vols)
-    tipo = a["tipo"]
-    p = a["preco"]
-    
-    tf_up = {"5m":"15m","15m":"1h","30m":"1h","1h":"4h","4h":"1d","1d":"1d"}.get(interval, "1h")
-    mtf_ok = True
-    tend_s = "LATERAL"
-    
-    if tf_up != interval:
-        ds = fetch_candles(symbol, tf_up)
-        if ds and len(ds["closes"]) >= 35:
-            as_ = analisar_closes(symbol, ds["closes"], ds["volumes"])
-            tend_s = as_["tendencia"]
-            if a["sinal_bruto"] == "COMPRA" and tend_s == "BAIXA":
-                mtf_ok = False
-            if a["sinal_bruto"] == "VENDA" and tend_s == "ALTA":
-                mtf_ok = False
-    
-    score = calcular_score(a["rsi"], a["macd_hist"], p, a["bb_upper"], a["bb_lower"], a["sinal_bruto"], a["volume_ratio"], mtf_ok)
-    sinal = a["sinal_bruto"] if (score >= SCORE_MINIMO and mtf_ok) else "NEUTRO"
-    forca = calcular_forca(a["rsi"], a["macd_hist"], sinal)
-    confianca = round(50 + score / 2, 1) if sinal != "NEUTRO" else round(score * 0.6, 1)
-    
-    mult = ATR_MULTIPLIER.get(tipo, ATR_MULTIPLIER["Ações"])
-    atr = a["atr"]
-    sl = round(p - mult["stop"] * atr, 6) if sinal == "COMPRA" else round(p + mult["stop"] * atr, 6)
-    tp = round(p + mult["tp"] * atr, 6) if sinal == "COMPRA" else round(p - mult["tp"] * atr, 6)
-    
-    return {
-        "preco": p, "rsi": a["rsi"], "macd_hist": a["macd_hist"],
-        "bb_upper": a["bb_upper"], "bb_lower": a["bb_lower"],
-        "volume_ratio": a["volume_ratio"], "ema9": a["ema9"], "ema21": a["ema21"],
-        "ema50": a["ema50"], "tendencia": a["tendencia"], "tendencia_sup": tend_s,
-        "sinal": sinal, "score": score, "forca": forca, "confianca": confianca,
-        "mtf_ok": mtf_ok, "stop_loss": sl, "take_profit": tp, "fonte": fonte,
-    }
-
-# ============================================================
-# PROCESSAMENTO DE SINAIS
-# ============================================================
-
-def processar_e_armazenar_sinais():
-    for symbol, cfg in SYMBOL_CONFIG.items():
-        analysis = get_analysis(symbol, "15m")
-        if not analysis or analysis["sinal"] == "NEUTRO":
-            if symbol in sinais_ativos:
-                del sinais_ativos[symbol]
-            continue
-        
-        agora = datetime.now()
-        sinal_data = {
-            "symbol": symbol, "nome": cfg["nome"], "nome_exibicao": cfg["nome_exibicao"],
-            "emoji": cfg["emoji"], "tipo": cfg["tipo"], "timeframe": "15m",
-            "preco": analysis["preco"], "sinal": analysis["sinal"], "score": analysis["score"],
-            "forca": analysis["forca"], "confianca": analysis["confianca"], "rsi": analysis["rsi"],
-            "macd_hist": analysis["macd_hist"], "bb_upper": analysis["bb_upper"],
-            "bb_lower": analysis["bb_lower"], "volume_ratio": analysis["volume_ratio"],
-            "tendencia": analysis["tendencia"], "tendencia_sup": analysis["tendencia_sup"],
-            "mtf_ok": analysis["mtf_ok"], "stop_loss": analysis["stop_loss"],
-            "take_profit": analysis["take_profit"], "entry": analysis["preco"],
-            "fonte": analysis["fonte"], "data": agora.strftime("%d/%m %H:%M"),
-            "data_completa": agora.strftime("%d/%m/%Y %H:%M:%S"),
-            "horario_confirmacao": agora.strftime("%H:%M:%S"),
-            "timestamp_criacao": agora.isoformat()
-        }
-        
-        if symbol in sinais_ativos:
-            sinal_existente = sinais_ativos[symbol]["dados"]
-            if sinal_existente["sinal"] != sinal_data["sinal"]:
-                mover_sinal_para_historico(symbol, sinal_existente)
-                sinais_ativos[symbol] = {"dados": sinal_data, "timestamp": agora}
+        score += 30 if rsi > 70 else 22 if rsi > 60 else 12 if rsi > 50 else 0
+    score += 25 if (sinal_bruto=="COMPRA" and macd_hist>0) or (sinal_bruto=="VENDA" and macd_hist<0) else 10 if abs(macd_hist)<p*0.0005 else 0
+    bw = bbu - bbl
+    if bw > 0:
+        pos = (p - bbl)/bw
+        if sinal_bruto == "COMPRA":
+            score += 25 if pos <= 0.1 else 15 if pos <= 0.3 else 8 if pos <= 0.5 else 0
         else:
-            sinais_ativos[symbol] = {"dados": sinal_data, "timestamp": agora}
+            score += 25 if pos >= 0.9 else 15 if pos >= 0.7 else 8 if pos >= 0.5 else 0
+    score += 10 if vr >= 1.5 else 7 if vr >= 1.2 else 4 if vr >= 1 else 0
+    
+    sinal_final = sinal_bruto if score >= SCORE_MINIMO else "NEUTRO"
+    confianca = round(50 + score/2,1) if sinal_final != "NEUTRO" else round(score*0.6,1)
+    forca = round((max(0,(50-rsi)/50*100) if sinal_final=="COMPRA" else max(0,(rsi-50)/50*100))*0.6 + (100 if (sinal_final=="COMPRA" and macd_hist>0) or (sinal_final=="VENDA" and macd_hist<0) else 30)*0.4,1)
+    
+    mult = ATR_MULTIPLIER.get(SYMBOL_CONFIG[symbol]["tipo"], {"stop":1.5,"tp":2.5})
+    sl = round(p - mult["stop"]*atr,6) if sinal_final=="COMPRA" else round(p + mult["stop"]*atr,6)
+    tp = round(p + mult["tp"]*atr,6) if sinal_final=="COMPRA" else round(p - mult["tp"]*atr,6)
+    
+    return {"preco":p, "rsi":rsi, "macd_hist":macd_hist, "volume_ratio":vr, "tendencia":tendencia,
+            "sinal":sinal_final, "score":score, "confianca":confianca, "forca":forca, 
+            "stop_loss":sl, "take_profit":tp, "fonte":fonte}
 
-# Iniciar thread de verificação
-threading.Thread(target=verificar_sinais_expirados, daemon=True).start()
+def processar_todos():
+    for tf in TIMEFRAMES:
+        for symbol, cfg in SYMBOL_CONFIG.items():
+            analise = analisar(symbol, tf)
+            if not analise or analise["sinal"] == "NEUTRO":
+                if symbol in sinais_ativos[tf]:
+                    del sinais_ativos[tf][symbol]
+                continue
+            
+            agora = datetime.now()
+            sinal = {
+                "symbol": symbol, "nome": cfg["nome"], "nome_exibicao": cfg["nome_exibicao"],
+                "emoji": cfg["emoji"], "tipo": cfg["tipo"], "timeframe": tf,
+                "timeframe_nome": TIMEFRAMES[tf]["nome"], "preco": analise["preco"],
+                "sinal": analise["sinal"], "score": analise["score"], "forca": analise["forca"],
+                "confianca": analise["confianca"], "rsi": analise["rsi"],
+                "macd_hist": analise["macd_hist"], "volume_ratio": analise["volume_ratio"],
+                "tendencia": analise["tendencia"], "stop_loss": analise["stop_loss"],
+                "take_profit": analise["take_profit"], "entry": analise["preco"],
+                "fonte": analise["fonte"], "horario": agora.strftime("%H:%M:%S"),
+                "timestamp": agora
+            }
+            
+            if symbol in sinais_ativos[tf]:
+                if sinais_ativos[tf][symbol]["dados"]["sinal"] != sinal["sinal"]:
+                    historico = carregar_historico()
+                    sinal_antigo = sinais_ativos[tf][symbol]["dados"]
+                    sinal_antigo["data_fim"] = agora.strftime("%d/%m/%Y %H:%M:%S")
+                    sinal_antigo["status"] = "substituido"
+                    historico.append(sinal_antigo)
+                    salvar_historico(historico)
+                    sinais_ativos[tf][symbol] = {"dados": sinal, "timestamp": agora}
+            else:
+                sinais_ativos[tf][symbol] = {"dados": sinal, "timestamp": agora}
+
+def verificar_expiracao():
+    while True:
+        agora = datetime.now()
+        for tf, config in TIMEFRAMES.items():
+            expira_em = config["expira"]
+            for symbol, item in list(sinais_ativos[tf].items()):
+                if (agora - item["timestamp"]).total_seconds() > expira_em:
+                    historico = carregar_historico()
+                    sinal = item["dados"]
+                    sinal["data_expiracao"] = agora.strftime("%d/%m/%Y %H:%M:%S")
+                    sinal["status"] = "expirado"
+                    historico.append(sinal)
+                    salvar_historico(historico)
+                    del sinais_ativos[tf][symbol]
+        time.sleep(30)
+
+threading.Thread(target=verificar_expiracao, daemon=True).start()
+threading.Thread(target=lambda: [time.sleep(1), processar_todos()], daemon=True).start()
 
 # ============================================================
-# ENDPOINTS DA API
+# ENDPOINTS
 # ============================================================
+@app.get("/api/sinais/{timeframe}")
+async def get_sinais(timeframe: str):
+    if timeframe not in TIMEFRAMES:
+        return {"erro": "Timeframe inválido. Use: 5m, 15m, 1h, 4h, 1d"}
+    
+    processar_todos()
+    resultado = []
+    for item in sinais_ativos[timeframe].values():
+        s = item["dados"].copy()
+        tempo = (datetime.now() - item["timestamp"]).total_seconds()
+        restante = max(0, TIMEFRAMES[timeframe]["expira"] - tempo)
+        s["expira_em"] = f"{int(restante//60)}min {int(restante%60)}s"
+        resultado.append(s)
+    return resultado
 
 @app.get("/api/sinais")
-async def get_sinais():
-    processar_e_armazenar_sinais()
-    sinais_retorno = []
-    for symbol, item in sinais_ativos.items():
-        sinal = item["dados"].copy()
-        timestamp_criacao = item["timestamp"]
-        tempo_restante = max(0, 900 - (datetime.now() - timestamp_criacao).total_seconds())
-        sinal["tempo_restante"] = int(tempo_restante)
-        sinal["tempo_restante_formatado"] = f"{int(tempo_restante // 60)}min {int(tempo_restante % 60)}s"
-        sinal["expiracao"] = (timestamp_criacao + timedelta(seconds=900)).strftime("%H:%M:%S")
-        sinais_retorno.append(sinal)
-    return sinais_retorno
+async def get_sinais_padrao():
+    return await get_sinais("15m")
 
 @app.get("/historico")
 async def get_historico():
     return carregar_historico()
 
 @app.post("/confirmar")
-async def confirmar_sinal(sinal: dict):
+async def confirmar(sinal: dict):
     h = carregar_historico()
-    sinal["data_confirmacao"] = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
+    sinal["confirmado_em"] = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
     h.append(sinal)
     salvar_historico(h)
     return {"ok": True}
 
 # ============================================================
-# HTML RESPONSE
+# HTML
 # ============================================================
-
-HTML_PAGE = """<!DOCTYPE html>
-<html lang="pt-br">
+HTML = """<!DOCTYPE html>
+<html>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1.0">
-<title>Valverde Trade IA</title>
-<link href="https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=DM+Sans:wght@300;400;500;600&display=swap" rel="stylesheet">
+<title>Valverde Trade IA - Múltiplos Timeframes</title>
+<link href="https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
 <style>
-:root{--bg:#060a17;--bg2:#0c1122;--bg3:#101728;--border:rgba(255,255,255,0.06);--text:#dde4f0;--muted:#4e6080;--accent:#38bdf8;--buy:#22c55e;--sell:#ef4444;--warn:#f59e0b}
+:root{--bg:#0a0e1a;--card:#111827;--border:#1f2937;--text:#e5e7eb;--muted:#6b7280;--buy:#10b981;--sell:#ef4444;--accent:#3b82f6}
 *{margin:0;padding:0;box-sizing:border-box}
-body{font-family:'DM Sans',sans-serif;background:var(--bg);color:var(--text);padding:20px}
-.wrap{max-width:1380px;margin:0 auto}
-.header{display:flex;justify-content:space-between;align-items:center;margin-bottom:20px;padding-bottom:10px;border-bottom:1px solid var(--border)}
-.logo{font-family:'Space Mono',monospace;font-size:1.1rem;color:var(--accent)}
-.refresh-btn{background:transparent;border:1px solid rgba(255,255,255,0.12);color:var(--text);padding:5px 12px;border-radius:6px;cursor:pointer}
-.tabs{display:flex;gap:5px;flex-wrap:wrap;margin-bottom:15px}
-.tab{padding:5px 12px;border-radius:20px;cursor:pointer;border:1px solid var(--border);background:transparent;color:var(--muted)}
-.tab.active{background:rgba(56,189,248,.12);border-color:var(--accent);color:var(--accent)}
-.grid{display:grid;grid-template-columns:1fr 1fr;gap:15px}
-@media(max-width:900px){.grid{grid-template-columns:1fr}}
-.panel{background:var(--bg2);border:1px solid var(--border);border-radius:14px;overflow:hidden}
-.panel-head{padding:12px 16px;border-bottom:1px solid var(--border);background:var(--bg3);display:flex;justify-content:space-between}
-.panel-body{padding:12px;max-height:80vh;overflow-y:auto}
-.sig-card{background:var(--bg3);border:1px solid var(--border);border-radius:11px;padding:12px;margin-bottom:9px;cursor:pointer}
-.sig-card.buy{border-left:3px solid var(--buy)}
-.sig-card.sell{border-left:3px solid var(--sell)}
-.sig-code{font-family:'Space Mono',monospace;font-size:0.9rem;font-weight:700;color:var(--accent)}
-.sig-name{font-size:0.65rem;color:var(--muted)}
-.badge{padding:3px 9px;border-radius:5px;font-size:0.7rem;font-weight:700}
-.badge.buy{background:rgba(34,197,94,.14);color:var(--buy)}
-.badge.sell{background:rgba(239,68,68,.14);color:var(--sell)}
-.sig-time{margin-top:8px;padding-top:6px;border-top:1px solid var(--border);font-size:0.6rem;color:var(--muted)}
-.sig-expiry{font-size:0.6rem;color:var(--warn);margin-top:4px}
+body{font-family:'Space Mono',monospace;background:var(--bg);color:var(--text);padding:20px}
+.header{display:flex;justify-content:space-between;align-items:center;margin-bottom:20px;flex-wrap:wrap;gap:10px}
+h1{font-size:1.2rem;color:var(--accent)}
+.tf-buttons{display:flex;gap:8px;flex-wrap:wrap}
+.tf-btn{padding:6px 12px;background:var(--card);border:1px solid var(--border);color:var(--muted);border-radius:6px;cursor:pointer;font-family:monospace;font-size:0.8rem}
+.tf-btn.active{background:var(--accent);color:white;border-color:var(--accent)}
+.refresh-btn{padding:6px 12px;background:var(--card);border:1px solid var(--border);color:var(--text);border-radius:6px;cursor:pointer}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:15px;margin-top:15px}
+@media(max-width:768px){.grid{grid-template-columns:1fr}}
+.panel{background:var(--card);border-radius:12px;border:1px solid var(--border);overflow:hidden}
+.panel-header{padding:12px 15px;background:rgba(0,0,0,0.2);border-bottom:1px solid var(--border);display:flex;justify-content:space-between}
+.panel-body{padding:12px;max-height:70vh;overflow-y:auto}
+.sinal-card{background:rgba(0,0,0,0.2);border-radius:8px;padding:12px;margin-bottom:10px;cursor:pointer;border-left:3px solid var(--muted)}
+.sinal-card.buy{border-left-color:var(--buy)}
+.sinal-card.sell{border-left-color:var(--sell)}
+.card-header{display:flex;justify-content:space-between;margin-bottom:8px}
+.asset{font-weight:bold;font-size:0.9rem}
+.asset-code{font-size:0.7rem;color:var(--muted)}
+.badge{padding:2px 8px;border-radius:4px;font-size:0.7rem;font-weight:bold}
+.badge.buy{background:rgba(16,185,129,0.2);color:var(--buy)}
+.badge.sell{background:rgba(239,68,68,0.2);color:var(--sell)}
+.precos{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin:8px 0;font-size:0.7rem}
+.metrics{display:flex;gap:10px;margin:8px 0;font-size:0.65rem;color:var(--muted)}
+.time{font-size:0.6rem;color:var(--muted);margin-top:6px;padding-top:6px;border-top:1px solid var(--border)}
+.hist-item{background:rgba(0,0,0,0.2);border-radius:6px;padding:8px;margin-bottom:6px;font-size:0.7rem}
 .empty{text-align:center;padding:40px;color:var(--muted)}
 </style>
 </head>
 <body>
-<div class="wrap">
-<div class="header"><span class="logo">VALVERDE TRADE IA v3.0</span><button class="refresh-btn" onclick="carregarTudo()">↻ ATUALIZAR</button></div>
-<div class="tabs"><button class="tab active" onclick="setTab('Todos')">Todos</button><button class="tab" onclick="setTab('Forex')">Forex</button><button class="tab" onclick="setTab('Commodities')">Commodities</button><button class="tab" onclick="setTab('Cripto')">Cripto</button><button class="tab" onclick="setTab('Índices')">Índices</button><button class="tab" onclick="setTab('Ações')">Ações</button></div>
-<div class="grid"><div class="panel"><div class="panel-head"><span>Sinais Ativos</span><span id="count-sinais">—</span></div><div class="panel-body" id="sinais-container">Carregando...</div></div><div class="panel"><div class="panel-head"><span>Histórico</span><span id="count-hist">—</span></div><div class="panel-body" id="historico-container">Carregando...</div></div></div></div>
+<div class="header">
+<h1>🔮 VALVERDE TRADE IA - MULTI TIMEFRAME</h1>
+<div style="display:flex;gap:10px">
+<div class="tf-buttons" id="tf-buttons"></div>
+<button class="refresh-btn" onclick="carregarTudo()">⟳ ATUALIZAR</button>
+</div>
+</div>
+<div class="grid">
+<div class="panel"><div class="panel-header"><span>📊 SINAIS ATIVOS</span><span id="count-sinais">-</span></div><div class="panel-body" id="sinais-container">Carregando...</div></div>
+<div class="panel"><div class="panel-header"><span>📜 HISTÓRICO</span><span id="count-hist">-</span></div><div class="panel-body" id="historico-container">Carregando...</div></div>
+</div>
 <script>
-let todosSinais=[],catAtual='Todos';
-function fmtPreco(v,t){if(v==null)return'—';let n=Number(v);if(t==='Forex')return n.toFixed(5);if(n>10000)return n.toLocaleString();return n.toFixed(2)}
-function renderSinais(){let lista=catAtual==='Todos'?todosSinais:todosSinais.filter(s=>s.tipo===catAtual);document.getElementById('count-sinais').innerHTML=lista.length;let html=lista.map(s=>`<div class="sig-card ${s.sinal==='COMPRA'?'buy':'sell'}" onclick='confirmar(${JSON.stringify(s)})'><div style="display:flex;justify-content:space-between;margin-bottom:10px"><div><div class="sig-code">${s.emoji} ${s.nome}</div><div class="sig-name">${s.nome_exibicao} · ${s.tipo}</div></div><span class="badge ${s.sinal==='COMPRA'?'buy':'sell'}">${s.sinal==='COMPRA'?'▲ COMPRA':'▼ VENDA'}</span></div><div>Entry: ${fmtPreco(s.preco,s.tipo)} | Stop: ${fmtPreco(s.stop_loss,s.tipo)} | TP: ${fmtPreco(s.take_profit,s.tipo)}</div><div>Score: ${s.score} | Conf: ${s.confianca}%</div><div class="sig-time">🕐 Confirmado: ${s.horario_confirmacao}</div><div class="sig-expiry">⏱ Expira em: ${s.tempo_restante_formatado}</div></div>`).join('');document.getElementById('sinais-container').innerHTML=html||'<div class="empty">Sem sinais</div>';}
-function renderHistorico(hist){let html=hist.slice().reverse().map(h=>`<div class="hist-item"><div><b>${h.emoji} ${h.nome}</b><br><small>${h.nome_exibicao}</small> - ${h.sinal}</div><div>Entry: ${fmtPreco(h.entry,h.tipo)} | SL: ${fmtPreco(h.stop_loss,h.tipo)} | TP: ${fmtPreco(h.take_profit,h.tipo)}</div><div class="sig-time">🕐 Confirmado: ${h.horario_confirmacao} | ${h.status==='expirado'?'⚠ Expirado':h.confirmado==='win'?'✓ WIN':'◌ Pend'}</div></div>`).join('');document.getElementById('historico-container').innerHTML=html||'<div class="empty">Sem histórico</div>';document.getElementById('count-hist').innerHTML=hist.length;}
-async function carregarSinais(){let r=await fetch('/api/sinais');todosSinais=await r.json();renderSinais();}
-async function carregarHistorico(){let r=await fetch('/historico');renderHistorico(await r.json());}
-async function confirmar(s){let res=confirm(`Confirmar ${s.nome} (${s.nome_exibicao}) - ${s.sinal}?\\nOK = WIN | Cancelar = LOSS`);if(res!==null){await fetch('/confirmar',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({...s,confirmado:res?'win':'loss'})});carregarHistorico();}}
-function setTab(cat){catAtual=cat;document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));event.target.classList.add('active');renderSinais();}
-async function carregarTudo(){await Promise.all([carregarSinais(),carregarHistorico()]);}
-carregarTudo();setInterval(carregarSinais,300000);
+let timeframeAtual = '15m';
+const timeframes = {'5m':'5min','15m':'15min','1h':'1hora','4h':'4horas','1d':'1dia'};
+
+function criarBotoes() {
+    const container = document.getElementById('tf-buttons');
+    container.innerHTML = Object.keys(timeframes).map(tf => 
+        `<button class="tf-btn ${tf===timeframeAtual?'active':''}" onclick="mudarTimeframe('${tf}')">${timeframes[tf]}</button>`
+    ).join('');
+}
+
+function fmtPreco(v,tipo) {
+    if(!v) return '—';
+    let n = Number(v);
+    if(tipo==='Forex') return n.toFixed(5);
+    if(n>10000) return n.toLocaleString();
+    return n.toFixed(2);
+}
+
+function renderSinais(sinais) {
+    document.getElementById('count-sinais').innerText = sinais.length;
+    if(!sinais.length) {
+        document.getElementById('sinais-container').innerHTML = '<div class="empty">📡 Nenhum sinal ativo</div>';
+        return;
+    }
+    document.getElementById('sinais-container').innerHTML = sinais.map(s => `
+        <div class="sinal-card ${s.sinal==='COMPRA'?'buy':'sell'}" onclick="confirmarSinal(${JSON.stringify(s)})">
+            <div class="card-header">
+                <div><span class="asset">${s.emoji} ${s.nome}</span><br><span class="asset-code">${s.nome_exibicao}</span></div>
+                <span class="badge ${s.sinal==='COMPRA'?'buy':'sell'}">${s.sinal==='COMPRA'?'▲ COMPRA':'▼ VENDA'}</span>
+            </div>
+            <div class="precos">
+                <div>📈 Entry<br><strong>${fmtPreco(s.entry,s.tipo)}</strong></div>
+                <div>🛑 Stop<br><strong style="color:var(--sell)">${fmtPreco(s.stop_loss,s.tipo)}</strong></div>
+                <div>🎯 TP<br><strong style="color:var(--buy)">${fmtPreco(s.take_profit,s.tipo)}</strong></div>
+            </div>
+            <div class="metrics">
+                <span>🎯 Score: ${s.score}</span>
+                <span>💪 Força: ${s.forca}%</span>
+                <span>📊 RSI: ${s.rsi}</span>
+            </div>
+            <div class="time">
+                🕐 ${s.horario} | ⏱ Expira: ${s.expira_em} | 📡 ${s.fonte}
+            </div>
+        </div>
+    `).join('');
+}
+
+function renderHistorico(hist) {
+    document.getElementById('count-hist').innerText = hist.length;
+    if(!hist.length) {
+        document.getElementById('historico-container').innerHTML = '<div class="empty">📋 Nenhum registro</div>';
+        return;
+    }
+    document.getElementById('historico-container').innerHTML = hist.slice().reverse().map(h => `
+        <div class="hist-item">
+            <strong>${h.emoji} ${h.nome}</strong> (${h.timeframe_nome}) - ${h.sinal}<br>
+            Entry: ${fmtPreco(h.entry,h.tipo)} | SL: ${fmtPreco(h.stop_loss,h.tipo)} | TP: ${fmtPreco(h.take_profit,h.tipo)}<br>
+            Score: ${h.score} | Status: ${h.status || 'pendente'}<br>
+            <small>🕐 ${h.horario || h.data_fim || h.confirmado_em || '-'}</small>
+        </div>
+    `).join('');
+}
+
+async function mudarTimeframe(tf) {
+    timeframeAtual = tf;
+    criarBotoes();
+    await carregarSinais();
+}
+
+async function carregarSinais() {
+    try {
+        const r = await fetch(`/api/sinais/${timeframeAtual}`);
+        const data = await r.json();
+        renderSinais(data);
+    } catch(e) { console.error(e); }
+}
+
+async function carregarHistorico() {
+    try {
+        const r = await fetch('/historico');
+        const data = await r.json();
+        renderHistorico(data);
+    } catch(e) { console.error(e); }
+}
+
+async function confirmarSinal(s) {
+    const res = confirm(`Confirmar ${s.nome} (${s.timeframe_nome}) - ${s.sinal}?\nOK = WIN | Cancelar = LOSS`);
+    if(res !== null) {
+        await fetch('/confirmar', {
+            method: 'POST',
+            headers: {'Content-Type':'application/json'},
+            body: JSON.stringify({...s, confirmado: res?'win':'loss', status: res?'ganho':'perdido'})
+        });
+        carregarHistorico();
+    }
+}
+
+async function carregarTudo() {
+    await Promise.all([carregarSinais(), carregarHistorico()]);
+}
+
+criarBotoes();
+carregarTudo();
+setInterval(carregarSinais, 60000);
 </script>
 </body>
 </html>"""
 
 @app.get("/")
 async def root():
-    return HTMLResponse(content=HTML_PAGE)
-
-# ============================================================
-# MAIN
-# ============================================================
+    return HTMLResponse(content=HTML)
 
 if __name__ == "__main__":
     import uvicorn
