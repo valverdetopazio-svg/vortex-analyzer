@@ -3,7 +3,6 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 from datetime import datetime, timedelta
 import os, json, requests, time, threading
-from tradingview_ta import TA_Handler, Interval
 
 app = FastAPI(title="Valverde Trade IA")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True,
@@ -22,13 +21,22 @@ SYMBOL_CONFIG = {
     "NZDUSD=X": {"nome":"NZD/USD","nome_exibicao":"Dólar NZ","tipo":"Forex","emoji":"🥝","base_fallback":0.605},
     "GC=F": {"nome":"XAUUSD","nome_exibicao":"Ouro","tipo":"Commodities","emoji":"🥇","base_fallback":2350},
     "SI=F": {"nome":"XAGUSD","nome_exibicao":"Prata","tipo":"Commodities","emoji":"🥈","base_fallback":28.5},
+    "PL=F": {"nome":"XPTUSD","nome_exibicao":"Platina","tipo":"Commodities","emoji":"⚗️","base_fallback":960},
     "CL=F": {"nome":"WTI","nome_exibicao":"Petróleo","tipo":"Commodities","emoji":"🛢️","base_fallback":78},
+    "BZ=F": {"nome":"BRENT","nome_exibicao":"Brent","tipo":"Commodities","emoji":"⛽","base_fallback":82},
+    "NG=F": {"nome":"NATGAS","nome_exibicao":"Gás Natural","tipo":"Commodities","emoji":"🔥","base_fallback":2.8},
     "BTC-USD": {"nome":"BTC","nome_exibicao":"Bitcoin","tipo":"Cripto","emoji":"₿","base_fallback":66800},
     "ETH-USD": {"nome":"ETH","nome_exibicao":"Ethereum","tipo":"Cripto","emoji":"⟠","base_fallback":3300},
+    "^GDAXI": {"nome":"DAX","nome_exibicao":"DAX","tipo":"Índices","emoji":"🇩🇪","base_fallback":18200},
+    "^FTSE": {"nome":"FTSE","nome_exibicao":"FTSE 100","tipo":"Índices","emoji":"🇬🇧","base_fallback":8200},
+    "^N225": {"nome":"NIKKEI","nome_exibicao":"Nikkei","tipo":"Índices","emoji":"🇯🇵","base_fallback":38500},
     "^GSPC": {"nome":"SP500","nome_exibicao":"S&P 500","tipo":"Índices","emoji":"🇺🇸","base_fallback":5200},
     "^IXIC": {"nome":"NASDAQ","nome_exibicao":"NASDAQ","tipo":"Índices","emoji":"💻","base_fallback":16400},
+    "^DJI": {"nome":"DOW30","nome_exibicao":"Dow Jones","tipo":"Índices","emoji":"📈","base_fallback":39000},
     "AAPL": {"nome":"AAPL","nome_exibicao":"Apple","tipo":"Ações","emoji":"🍎","base_fallback":220},
     "NVDA": {"nome":"NVDA","nome_exibicao":"NVIDIA","tipo":"Ações","emoji":"🎮","base_fallback":120},
+    "MSFT": {"nome":"MSFT","nome_exibicao":"Microsoft","tipo":"Ações","emoji":"💻","base_fallback":420},
+    "GOOGL": {"nome":"GOOGL","nome_exibicao":"Google","tipo":"Ações","emoji":"🔍","base_fallback":140},
 }
 
 TIMEFRAMES = {
@@ -42,8 +50,22 @@ TIMEFRAMES = {
 ATR_MULTIPLIER = {"Forex":{"stop":1.5,"tp":2.5},"Cripto":{"stop":2.5,"tp":4},"Commodities":{"stop":2,"tp":3.5},"Índices":{"stop":1.8,"tp":3},"Ações":{"stop":1.5,"tp":2.5}}
 SCORE_MINIMO = 65
 HISTORICO_FILE = "historico_sinais.json"
+SELECAO_FILE = "ativos_selecionados.json"
 
-# Armazenamento: sinais_ativos[timeframe][symbol] = {"dados":{}, "timestamp":datetime}
+# Carregar ativos selecionados
+def carregar_selecao():
+    if os.path.exists(SELECAO_FILE):
+        with open(SELECAO_FILE, "r") as f:
+            return json.load(f)
+    return {symbol: True for symbol in SYMBOL_CONFIG}  # Todos ativos por padrão
+
+def salvar_selecao(selecao):
+    with open(SELECAO_FILE, "w") as f:
+        json.dump(selecao, f, indent=2)
+
+ativos_selecionados = carregar_selecao()
+
+# Armazenamento
 sinais_ativos = {tf: {} for tf in TIMEFRAMES}
 
 # ============================================================
@@ -99,7 +121,6 @@ def calcular_volume_ratio(volumes):
     return volumes[-1]/media if media else 1
 
 def fetch_dados(symbol, interval):
-    """Busca dados Yahoo Finance"""
     try:
         yi = "1h" if interval=="4h" else interval
         rng = {"5m":"5d","15m":"5d","1h":"30d","4h":"60d","1d":"6mo"}.get(interval,"5d")
@@ -114,7 +135,6 @@ def fetch_dados(symbol, interval):
                 return {"closes":closes, "volumes":volumes or [1000000]*len(closes), "fonte":"yahoo"}
     except: pass
     
-    # Fallback simulado
     import random
     base = SYMBOL_CONFIG.get(symbol,{}).get("base_fallback",100)
     random.seed(int(time.time()/300) + hash(symbol+interval)%9999)
@@ -123,6 +143,9 @@ def fetch_dados(symbol, interval):
             "fonte":"simulado"}
 
 def analisar(symbol, interval):
+    if not ativos_selecionados.get(symbol, True):
+        return None
+    
     dados = fetch_dados(symbol, interval)
     closes, volumes, fonte = dados["closes"], dados["volumes"], dados["fonte"]
     if len(closes) < 35: return None
@@ -143,7 +166,6 @@ def analisar(symbol, interval):
     elif rsi > 70: sinal_bruto = "VENDA"
     else: sinal_bruto = "NEUTRO"
     
-    # Score
     score = 0
     if sinal_bruto == "COMPRA":
         score += 30 if rsi < 30 else 22 if rsi < 40 else 12 if rsi < 50 else 0
@@ -174,6 +196,11 @@ def analisar(symbol, interval):
 def processar_todos():
     for tf in TIMEFRAMES:
         for symbol, cfg in SYMBOL_CONFIG.items():
+            if not ativos_selecionados.get(symbol, True):
+                if symbol in sinais_ativos[tf]:
+                    del sinais_ativos[tf][symbol]
+                continue
+                
             analise = analisar(symbol, tf)
             if not analise or analise["sinal"] == "NEUTRO":
                 if symbol in sinais_ativos[tf]:
@@ -231,7 +258,7 @@ threading.Thread(target=lambda: [time.sleep(1), processar_todos()], daemon=True)
 @app.get("/api/sinais/{timeframe}")
 async def get_sinais(timeframe: str):
     if timeframe not in TIMEFRAMES:
-        return {"erro": "Timeframe inválido. Use: 5m, 15m, 1h, 4h, 1d"}
+        return {"erro": "Timeframe inválido"}
     
     processar_todos()
     resultado = []
@@ -243,9 +270,35 @@ async def get_sinais(timeframe: str):
         resultado.append(s)
     return resultado
 
-@app.get("/api/sinais")
-async def get_sinais_padrao():
-    return await get_sinais("15m")
+@app.get("/api/ativos")
+async def get_ativos():
+    """Retorna lista de ativos com status de seleção"""
+    ativos = []
+    for symbol, cfg in SYMBOL_CONFIG.items():
+        ativos.append({
+            "symbol": symbol,
+            "nome": cfg["nome"],
+            "nome_exibicao": cfg["nome_exibicao"],
+            "tipo": cfg["tipo"],
+            "emoji": cfg["emoji"],
+            "selecionado": ativos_selecionados.get(symbol, True)
+        })
+    return ativos
+
+@app.post("/api/ativos/selecionar")
+async def selecionar_ativos(selecao: dict):
+    """Salva seleção de ativos"""
+    global ativos_selecionados
+    ativos_selecionados = selecao
+    salvar_selecao(selecao)
+    
+    # Limpar sinais de ativos desmarcados
+    for tf in sinais_ativos:
+        for symbol in list(sinais_ativos[tf].keys()):
+            if not selecao.get(symbol, True):
+                del sinais_ativos[tf][symbol]
+    
+    return {"ok": True}
 
 @app.get("/historico")
 async def get_historico():
@@ -260,14 +313,14 @@ async def confirmar(sinal: dict):
     return {"ok": True}
 
 # ============================================================
-# HTML
+# HTML COM FILTRO DE ATIVOS
 # ============================================================
 HTML = """<!DOCTYPE html>
 <html>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1.0">
-<title>Valverde Trade IA - Múltiplos Timeframes</title>
+<title>Valverde Trade IA - Selecione Ativos</title>
 <link href="https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
 <style>
 :root{--bg:#0a0e1a;--card:#111827;--border:#1f2937;--text:#e5e7eb;--muted:#6b7280;--buy:#10b981;--sell:#ef4444;--accent:#3b82f6}
@@ -275,15 +328,22 @@ HTML = """<!DOCTYPE html>
 body{font-family:'Space Mono',monospace;background:var(--bg);color:var(--text);padding:20px}
 .header{display:flex;justify-content:space-between;align-items:center;margin-bottom:20px;flex-wrap:wrap;gap:10px}
 h1{font-size:1.2rem;color:var(--accent)}
-.tf-buttons{display:flex;gap:8px;flex-wrap:wrap}
-.tf-btn{padding:6px 12px;background:var(--card);border:1px solid var(--border);color:var(--muted);border-radius:6px;cursor:pointer;font-family:monospace;font-size:0.8rem}
-.tf-btn.active{background:var(--accent);color:white;border-color:var(--accent)}
-.refresh-btn{padding:6px 12px;background:var(--card);border:1px solid var(--border);color:var(--text);border-radius:6px;cursor:pointer}
-.grid{display:grid;grid-template-columns:1fr 1fr;gap:15px;margin-top:15px}
-@media(max-width:768px){.grid{grid-template-columns:1fr}}
+.controls{display:flex;gap:10px;flex-wrap:wrap}
+.tf-btn,.refresh-btn,.filter-btn{padding:6px 12px;background:var(--card);border:1px solid var(--border);color:var(--muted);border-radius:6px;cursor:pointer;font-family:monospace;font-size:0.8rem}
+.tf-btn.active,.filter-btn.active{background:var(--accent);color:white;border-color:var(--accent)}
+.grid{display:grid;grid-template-columns:300px 1fr 1fr;gap:15px;margin-top:15px}
+@media(max-width:900px){.grid{grid-template-columns:1fr}}
 .panel{background:var(--card);border-radius:12px;border:1px solid var(--border);overflow:hidden}
-.panel-header{padding:12px 15px;background:rgba(0,0,0,0.2);border-bottom:1px solid var(--border);display:flex;justify-content:space-between}
+.panel-header{padding:12px 15px;background:rgba(0,0,0,0.2);border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center}
 .panel-body{padding:12px;max-height:70vh;overflow-y:auto}
+.ativos-lista{display:flex;flex-direction:column;gap:8px}
+.ativo-item{display:flex;align-items:center;gap:8px;padding:6px;border-radius:6px;cursor:pointer;background:rgba(0,0,0,0.2)}
+.ativo-item:hover{background:rgba(59,130,246,0.1)}
+.ativo-item input{cursor:pointer;width:18px;height:18px}
+.ativo-info{flex:1}
+.ativo-nome{font-size:0.8rem;font-weight:bold}
+.ativo-codigo{font-size:0.6rem;color:var(--muted)}
+.tipo-badge{font-size:0.55rem;padding:2px 5px;border-radius:3px;background:var(--accent);color:white}
 .sinal-card{background:rgba(0,0,0,0.2);border-radius:8px;padding:12px;margin-bottom:10px;cursor:pointer;border-left:3px solid var(--muted)}
 .sinal-card.buy{border-left-color:var(--buy)}
 .sinal-card.sell{border-left-color:var(--sell)}
@@ -298,22 +358,40 @@ h1{font-size:1.2rem;color:var(--accent)}
 .time{font-size:0.6rem;color:var(--muted);margin-top:6px;padding-top:6px;border-top:1px solid var(--border)}
 .hist-item{background:rgba(0,0,0,0.2);border-radius:6px;padding:8px;margin-bottom:6px;font-size:0.7rem}
 .empty{text-align:center;padding:40px;color:var(--muted)}
+.selecionar-todos{display:flex;gap:8px;margin-bottom:12px;padding-bottom:8px;border-bottom:1px solid var(--border)}
 </style>
 </head>
 <body>
 <div class="header">
-<h1>🔮 VALVERDE TRADE IA - MULTI TIMEFRAME</h1>
-<div style="display:flex;gap:10px">
+<h1>🔮 VALVERDE TRADE IA - SELECIONE ATIVOS</h1>
+<div class="controls">
 <div class="tf-buttons" id="tf-buttons"></div>
 <button class="refresh-btn" onclick="carregarTudo()">⟳ ATUALIZAR</button>
 </div>
 </div>
 <div class="grid">
-<div class="panel"><div class="panel-header"><span>📊 SINAIS ATIVOS</span><span id="count-sinais">-</span></div><div class="panel-body" id="sinais-container">Carregando...</div></div>
-<div class="panel"><div class="panel-header"><span>📜 HISTÓRICO</span><span id="count-hist">-</span></div><div class="panel-body" id="historico-container">Carregando...</div></div>
+<div class="panel">
+<div class="panel-header"><span>🎯 ATIVOS MONITORADOS</span><span id="count-ativos">-</span></div>
+<div class="panel-body">
+<div class="selecionar-todos">
+<button class="filter-btn" onclick="selecionarTodos(true)">✓ SELECIONAR TODOS</button>
+<button class="filter-btn" onclick="selecionarTodos(false)">✗ DESMARCAR TODOS</button>
+</div>
+<div id="ativos-lista" class="ativos-lista">Carregando...</div>
+</div>
+</div>
+<div class="panel">
+<div class="panel-header"><span>📊 SINAIS ATIVOS</span><span id="count-sinais">-</span></div>
+<div class="panel-body" id="sinais-container">Carregando...</div>
+</div>
+<div class="panel">
+<div class="panel-header"><span>📜 HISTÓRICO</span><span id="count-hist">-</span></div>
+<div class="panel-body" id="historico-container">Carregando...</div>
+</div>
 </div>
 <script>
 let timeframeAtual = '15m';
+let ativosLista = [];
 const timeframes = {'5m':'5min','15m':'15min','1h':'1hora','4h':'4horas','1d':'1dia'};
 
 function criarBotoes() {
@@ -321,6 +399,67 @@ function criarBotoes() {
     container.innerHTML = Object.keys(timeframes).map(tf => 
         `<button class="tf-btn ${tf===timeframeAtual?'active':''}" onclick="mudarTimeframe('${tf}')">${timeframes[tf]}</button>`
     ).join('');
+}
+
+async function carregarAtivos() {
+    try {
+        const r = await fetch('/api/ativos');
+        ativosLista = await r.json();
+        renderAtivos();
+    } catch(e) { console.error(e); }
+}
+
+function renderAtivos() {
+    const tipos = [...new Set(ativosLista.map(a => a.tipo))];
+    let html = '';
+    
+    for(const tipo of tipos) {
+        const ativosTipo = ativosLista.filter(a => a.tipo === tipo);
+        html += `<div style="margin-bottom:12px"><strong style="color:var(--accent);font-size:0.7rem">${tipo.toUpperCase()}</strong>`;
+        ativosTipo.forEach(a => {
+            html += `
+                <div class="ativo-item" onclick="toggleAtivo('${a.symbol}')">
+                    <input type="checkbox" ${a.selecionado ? 'checked' : ''} onclick="event.stopPropagation();toggleAtivo('${a.symbol}')">
+                    <div class="ativo-info">
+                        <div class="ativo-nome">${a.emoji} ${a.nome_exibicao}</div>
+                        <div class="ativo-codigo">${a.nome}</div>
+                    </div>
+                    <span class="tipo-badge">${a.tipo}</span>
+                </div>
+            `;
+        });
+        html += `</div>`;
+    }
+    
+    document.getElementById('ativos-lista').innerHTML = html;
+    document.getElementById('count-ativos').innerText = ativosLista.filter(a => a.selecionado).length;
+}
+
+async function toggleAtivo(symbol) {
+    const ativo = ativosLista.find(a => a.symbol === symbol);
+    if(ativo) {
+        ativo.selecionado = !ativo.selecionado;
+        await salvarSelecao();
+        renderAtivos();
+        carregarSinais(); // Recarregar sinais com nova seleção
+    }
+}
+
+async function selecionarTodos(selecionar) {
+    ativosLista.forEach(a => a.selecionado = selecionar);
+    await salvarSelecao();
+    renderAtivos();
+    carregarSinais();
+}
+
+async function salvarSelecao() {
+    const selecao = {};
+    ativosLista.forEach(a => selecao[a.symbol] = a.selecionado);
+    await fetch('/api/ativos/selecionar', {
+        method: 'POST',
+        headers: {'Content-Type':'application/json'},
+        body: JSON.stringify(selecao)
+    });
 }
 
 function fmtPreco(v,tipo) {
@@ -340,7 +479,7 @@ function renderSinais(sinais) {
     document.getElementById('sinais-container').innerHTML = sinais.map(s => `
         <div class="sinal-card ${s.sinal==='COMPRA'?'buy':'sell'}" onclick="confirmarSinal(${JSON.stringify(s)})">
             <div class="card-header">
-                <div><span class="asset">${s.emoji} ${s.nome}</span><br><span class="asset-code">${s.nome_exibicao}</span></div>
+                <div><span class="asset">${s.emoji} ${s.nome_exibicao}</span><br><span class="asset-code">${s.nome} · ${s.timeframe_nome}</span></div>
                 <span class="badge ${s.sinal==='COMPRA'?'buy':'sell'}">${s.sinal==='COMPRA'?'▲ COMPRA':'▼ VENDA'}</span>
             </div>
             <div class="precos">
@@ -368,7 +507,7 @@ function renderHistorico(hist) {
     }
     document.getElementById('historico-container').innerHTML = hist.slice().reverse().map(h => `
         <div class="hist-item">
-            <strong>${h.emoji} ${h.nome}</strong> (${h.timeframe_nome}) - ${h.sinal}<br>
+            <strong>${h.emoji} ${h.nome_exibicao}</strong> (${h.timeframe_nome}) - ${h.sinal}<br>
             Entry: ${fmtPreco(h.entry,h.tipo)} | SL: ${fmtPreco(h.stop_loss,h.tipo)} | TP: ${fmtPreco(h.take_profit,h.tipo)}<br>
             Score: ${h.score} | Status: ${h.status || 'pendente'}<br>
             <small>🕐 ${h.horario || h.data_fim || h.confirmado_em || '-'}</small>
@@ -399,7 +538,7 @@ async function carregarHistorico() {
 }
 
 async function confirmarSinal(s) {
-    const res = confirm(`Confirmar ${s.nome} (${s.timeframe_nome}) - ${s.sinal}?\nOK = WIN | Cancelar = LOSS`);
+    const res = confirm(`Confirmar ${s.nome_exibicao} (${s.timeframe_nome}) - ${s.sinal}?\\nOK = WIN | Cancelar = LOSS`);
     if(res !== null) {
         await fetch('/confirmar', {
             method: 'POST',
@@ -411,7 +550,7 @@ async function confirmarSinal(s) {
 }
 
 async function carregarTudo() {
-    await Promise.all([carregarSinais(), carregarHistorico()]);
+    await Promise.all([carregarAtivos(), carregarSinais(), carregarHistorico()]);
 }
 
 criarBotoes();
