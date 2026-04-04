@@ -1,5 +1,5 @@
 """
-VALVERDE TRADE IA - Interface Profissional
+VORTEX TRADE IA - Interface Profissional
 Com design exatamente como solicitado
 """
 
