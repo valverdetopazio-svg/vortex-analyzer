@@ -1,58 +1,5 @@
 # ============================================================
-# SISTEMA DE EXPIRAÇÃO DE SINAIS (15 minutos)
-# ============================================================
-
-import threading
-from datetime import datetime, timedelta
-
-# Armazenamento em memória dos sinais ativos com timestamp
-sinais_ativos = {}  # {symbol: {"dados": sinal, "timestamp": datetime}}
-
-def mover_sinal_para_historico(symbol, sinal_data):
-    """Move um sinal expirado para o histórico"""
-    historico = carregar_historico()
-    
-    # Adiciona dados de expiração
-    sinal_data["data_confirmacao"] = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
-    sinal_data["status"] = "expirado"
-    sinal_data["motivo"] = "Tempo limite de 15 minutos excedido"
-    
-    historico.append(sinal_data)
-    salvar_historico(historico)
-    
-    # Remove dos sinais ativos
-    if symbol in sinais_ativos:
-        del sinais_ativos[symbol]
-    
-    print(f"[{datetime.now().strftime('%H:%M:%S')}] Sinal expirado: {sinal_data.get('nome_exibicao')} - {sinal_data.get('sinal')}")
-
-def verificar_sinais_expirados():
-    """Verifica periodicamente sinais com mais de 15 minutos"""
-    while True:
-        try:
-            agora = datetime.now()
-            expirados = []
-            
-            for symbol, item in sinais_ativos.items():
-                tempo_passado = (agora - item["timestamp"]).total_seconds()
-                if tempo_passado > 900:  # 15 minutos = 900 segundos
-                    expirados.append((symbol, item["dados"]))
-            
-            # Move sinais expirados para o histórico
-            for symbol, sinal in expirados:
-                mover_sinal_para_historico(symbol, sinal)
-                
-            time.sleep(30)  # Verifica a cada 30 segundos
-            
-        except Exception as e:
-            print(f"Erro ao verificar sinais expirados: {e}")
-            time.sleep(60)
-
-# Inicia a thread de verificação em background
-threading.Thread(target=verificar_sinais_expirados, daemon=True).start()
-
-# ============================================================
-# FUNÇÃO MODIFICADA PARA GERENCIAR SINAIS
+# FUNÇÃO MODIFICADA PARA ARMAZENAR HORÁRIO DE CONFIRMAÇÃO
 # ============================================================
 
 def processar_e_armazenar_sinais():
@@ -64,6 +11,8 @@ def processar_e_armazenar_sinais():
             if symbol in sinais_ativos:
                 del sinais_ativos[symbol]
             continue
+        
+        agora = datetime.now()
         
         sinal_data = {
             "symbol": symbol,
@@ -89,8 +38,10 @@ def processar_e_armazenar_sinais():
             "take_profit": analysis["take_profit"],
             "entry": analysis["preco"],
             "fonte": analysis["fonte"],
-            "data": datetime.now().strftime("%d/%m %H:%M"),
-            "timestamp_criacao": datetime.now().isoformat()
+            "data": agora.strftime("%d/%m %H:%M"),
+            "data_completa": agora.strftime("%d/%m/%Y %H:%M:%S"),
+            "horario_confirmacao": agora.strftime("%H:%M:%S"),
+            "timestamp_criacao": agora.isoformat()
         }
         
         # Verifica se já existe um sinal ativo para este símbolo
@@ -102,17 +53,194 @@ def processar_e_armazenar_sinais():
                 # Adiciona novo sinal
                 sinais_ativos[symbol] = {
                     "dados": sinal_data,
-                    "timestamp": datetime.now()
+                    "timestamp": agora
                 }
         else:
             # Novo sinal
             sinais_ativos[symbol] = {
                 "dados": sinal_data,
-                "timestamp": datetime.now()
+                "timestamp": agora
             }
 
 # ============================================================
-# NOVO ENDPOINT PARA CONSULTAR SINAIS ATIVOS COM TEMPO RESTANTE
+# HTML MODIFICADO - MOSTRANDO HORÁRIO DE CONFIRMAÇÃO
+# ============================================================
+
+# Adicione este CSS ao HTML_PAGE
+additional_css = """
+/* Estilos para horário de confirmação */
+.sig-time {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-top: 8px;
+    padding-top: 6px;
+    border-top: 1px solid var(--border);
+    font-family: var(--mono);
+    font-size: .58rem;
+    color: var(--muted);
+}
+.sig-time .time-badge {
+    background: rgba(56, 189, 248, 0.1);
+    padding: 2px 6px;
+    border-radius: 4px;
+    color: var(--accent);
+}
+.sig-time .confirm-time {
+    color: var(--text);
+}
+.sig-expiry {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: .58rem;
+    color: var(--warn);
+}
+.sig-expiry .expiry-timer {
+    font-weight: 700;
+    color: var(--warn);
+}
+.hist-time {
+    font-family: var(--mono);
+    font-size: .55rem;
+    color: var(--muted);
+    margin-top: 4px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+.hist-time .confirm-badge {
+    background: rgba(34, 197, 94, 0.1);
+    padding: 1px 5px;
+    border-radius: 3px;
+    color: var(--buy);
+}
+"""
+
+# Modifique a função renderSinais no JavaScript para incluir horário
+def get_modified_js():
+    return """
+function renderSinais(sinais) {
+  const list = catAtual==='Todos' ? sinais : sinais.filter(s=>s.tipo===catAtual);
+  document.getElementById('count-sinais').textContent = list.length + ' ativos';
+  const el = document.getElementById('sinais-container');
+  if (!list.length){
+    el.innerHTML='<div class="empty"><div class="ico">📡</div>Sem sinais para esta categoria</div>';
+    return;
+  }
+  el.innerHTML = list.map(s=>{
+    const cls  = s.sinal==='COMPRA'?'buy':s.sinal==='VENDA'?'sell':'neutral';
+    const sc   = scoreClass(s.score);
+    const mhS  = s.macd_hist>=0?'+':'';
+    const vcol = s.volume_ratio>=1.2?'color:var(--buy)':s.volume_ratio<0.9?'color:var(--sell)':'';
+    const sim  = s.fonte==='simulado'?`<span class="badge sim">SIM</span>`:'';
+    const fp   = v => fmtPreco(v,s.tipo);
+    const sinalLabel = s.sinal==='COMPRA'?'▲ COMPRA':s.sinal==='VENDA'?'▼ VENDA':'— NEUTRO';
+    const mhFmt = Math.abs(s.macd_hist)<0.000001
+      ? s.macd_hist.toExponential(2)
+      : Number(s.macd_hist).toFixed(6);
+
+    return `
+    <div class="sig-card ${cls}" onclick='abrirConfirmacao(${JSON.stringify(s)})'>
+      <div class="sig-top">
+        <div class="sig-asset">
+          <span class="sig-emoji">${s.emoji}</span>
+          <div>
+            <div class="sig-name">${s.nome_exibicao} ${sim}</div>
+            <div class="sig-sub">${s.tipo} · ${s.nome} · ${s.timeframe}</div>
+          </div>
+        </div>
+        <span class="badge ${cls}">${sinalLabel}</span>
+      </div>
+
+      <div class="sig-levels">
+        <div class="level"><div class="lbl">Entry</div><div class="val entry">${fp(s.preco)}</div></div>
+        <div class="level"><div class="lbl">Stop</div><div class="val stop">${fp(s.stop_loss)}</div></div>
+        <div class="level"><div class="lbl">TP</div><div class="val tp">${fp(s.take_profit)}</div></div>
+      </div>
+
+      <div class="metrics">
+        <div class="mbox">
+          <div class="mlbl">Score</div>
+          <div class="mbar-w"><div class="mbar b-score ${sc}" style="width:${s.score}%"></div></div>
+          <div class="mval">${s.score}/100</div>
+        </div>
+        <div class="mbox">
+          <div class="mlbl">Confiança</div>
+          <div class="mbar-w"><div class="mbar b-conf" style="width:${s.confianca}%"></div></div>
+          <div class="mval">${s.confianca}%</div>
+        </div>
+        <div class="mbox">
+          <div class="mlbl">Força</div>
+          <div class="mbar-w"><div class="mbar b-forca" style="width:${s.forca}%"></div></div>
+          <div class="mval">${s.forca}%</div>
+        </div>
+      </div>
+
+      <div class="ind-row">
+        <span class="chip">RSI <span>${s.rsi}</span></span>
+        <span class="chip">MACD <span>${mhS}${mhFmt}</span></span>
+        <span class="chip">Vol <span style="${vcol}">${s.volume_ratio}×</span></span>
+        <span class="chip">Tend <span>${s.tendencia}</span></span>
+        <span class="chip ${s.mtf_ok?'mtf-ok':'mtf-fail'}">${s.mtf_ok?'✓':'✗'} MTF</span>
+      </div>
+
+      <div class="sig-time">
+        <span>🕐 Confirmado:</span>
+        <span class="time-badge">${s.horario_confirmacao || s.data.split(' ')[1] || '--:--:--'}</span>
+        <span class="confirm-time">${s.data_completa || s.data}</span>
+      </div>
+
+      <div class="sig-expiry">
+        <span>⏱ Expira em:</span>
+        <span class="expiry-timer" data-expiry="${s.expiracao}">${s.tempo_restante_formatado}</span>
+        <span>(${s.expiracao})</span>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+function renderHistorico(hist) {
+  const el = document.getElementById('historico-container');
+  document.getElementById('count-hist').textContent = hist.length + ' registros';
+  if (!hist.length){
+    el.innerHTML='<div class="empty"><div class="ico">📋</div>Nenhum sinal confirmado ainda<br><small>Clique em um card para registrar WIN/LOSS</small></div>';
+    return;
+  }
+  el.innerHTML=[...hist].reverse().map(h=>{
+    const rc=h.confirmado==='win'?'win':h.confirmado==='loss'?'loss':'pend';
+    const rt=h.confirmado==='win'?'✓ WIN':h.confirmado==='loss'?'✗ LOSS':'◌ Pend';
+    const fp=v=>fmtPreco(v,h.tipo||'');
+    const horarioConfirm = h.horario_confirmacao || (h.data_confirmacao ? h.data_confirmacao.split(' ')[1] : (h.data ? h.data.split(' ')[1] : '--:--'));
+    
+    return `
+    <div class="hist-item">
+      <div class="hist-top">
+        <div><span class="hist-asset">${h.emoji||'📊'} ${h.nome_exibicao||h.nome}</span>
+          <span class="hist-tf">${h.timeframe} · ${h.sinal}</span></div>
+        <span class="hist-res ${rc}">${rt}</span>
+      </div>
+      <div class="hist-lvl">
+        Entry:<span>${fp(h.entry)}</span>
+        Stop:<span>${fp(h.stop_loss)}</span>
+        TP:<span>${fp(h.take_profit)}</span>
+        Score:<span>${h.score||'—'}</span>
+        Conf:<span>${h.confianca||'—'}%</span>
+        Força:<span>${h.forca||'—'}%</span>
+      </div>
+      <div class="hist-time">
+        <span>🕐 Confirmado:</span>
+        <span class="confirm-badge">${horarioConfirm}</span>
+        <span>${h.data_completa || h.data_confirmacao || h.data || '—'}</span>
+        ${h.status === 'expirado' ? '<span style="color:var(--warn)">⚠ Expirado após 15min</span>' : ''}
+      </div>
+    </div>`;
+  }).join('');
+}
+"""
+
+# ============================================================
+# ENDPOINT MODIFICADO PARA INCLUIR HORÁRIO
 # ============================================================
 
 @app.get("/api/sinais")
@@ -134,99 +262,33 @@ async def get_sinais():
         sinal["tempo_restante_formatado"] = f"{int(tempo_restante // 60)}min {int(tempo_restante % 60)}s"
         sinal["expiracao"] = (timestamp_criacao + timedelta(seconds=900)).strftime("%H:%M:%S")
         
+        # Garante que o horário de confirmação está presente
+        if "horario_confirmacao" not in sinal:
+            sinal["horario_confirmacao"] = timestamp_criacao.strftime("%H:%M:%S")
+        if "data_completa" not in sinal:
+            sinal["data_completa"] = timestamp_criacao.strftime("%d/%m/%Y %H:%M:%S")
+        
         sinais_retorno.append(sinal)
     
     return sinais_retorno
 
-@app.get("/api/sinais/ativos")
-async def get_sinais_ativos():
-    """Endpoint específico para sinais ativos"""
-    return await get_sinais()
-
-@app.get("/api/sinais/expirados")
-async def get_sinais_expirados():
-    """Retorna apenas sinais expirados do histórico"""
-    historico = carregar_historico()
-    expirados = [s for s in historico if s.get("status") == "expirado"]
-    return expirados
-
 # ============================================================
-# HTML MODIFICADO (trecho relevante para mostrar tempo restante)
+# FUNÇÃO DE CONFIRMAÇÃO MODIFICADA
 # ============================================================
 
-# Adicione esta função JavaScript ao HTML_PAGE
-def get_modified_html():
-    return HTML_PAGE.replace(
-        '</div>',
-        '''
-        <div class="sig-expiry" style="font-family:var(--mono);font-size:.58rem;color:var(--warn);margin-top:6px;padding-top:5px;border-top:1px solid var(--border)">
-          ⏱ Expira em: <span class="expiry-timer" data-expiry="${s.expiracao}">${s.tempo_restante_formatado}</span>
-        </div>
-        </div>
-        ''',
-        1  # Apenas a primeira ocorrência (no lugar certo)
-    )
-
-# Adicione também um contador regressivo ao JavaScript
-countdown_script = """
-<script>
-// Contador regressivo para expiração
-function atualizarTemporizadores() {
-    document.querySelectorAll('.expiry-timer').forEach(el => {
-        const expiryTime = el.getAttribute('data-expiry');
-        if (expiryTime) {
-            const now = new Date();
-            const [hours, minutes, seconds] = expiryTime.split(':');
-            const expiry = new Date();
-            expiry.setHours(parseInt(hours), parseInt(minutes), parseInt(seconds));
-            
-            const diff = expiry - now;
-            if (diff <= 0) {
-                el.textContent = 'Expirado';
-                el.style.color = '#ef4444';
-                // Recarregar sinais quando expirar
-                setTimeout(() => carregarTudo(), 1000);
-            } else {
-                const mins = Math.floor(diff / 60000);
-                const secs = Math.floor((diff % 60000) / 1000);
-                el.textContent = `${mins}min ${secs}s`;
-            }
-        }
-    });
-}
-
-// Atualizar a cada segundo
-setInterval(atualizarTemporizadores, 1000);
-</script>
-"""
-
-# ============================================================
-# ENDPOINT PARA LIMPAR SINAIS EXPIRADOS MANUALMENTE
-# ============================================================
-
-@app.post("/api/sinais/limpar-expirados")
-async def limpar_sinais_expirados():
-    """Remove todos os sinais expirados do histórico (opcional)"""
-    historico = carregar_historico()
-    historico = [s for s in historico if s.get("status") != "expirado" or 
-                 datetime.now() - datetime.strptime(s.get("data_confirmacao", "01/01/2000 00:00:00"), "%d/%m/%Y %H:%M:%S") < timedelta(days=7)]
-    salvar_historico(historico)
-    return {"ok": True, "mensagem": "Sinais expirados antigos removidos"}
-
-# ============================================================
-# FUNÇÃO DE MONITORAMENTO (opcional - para logs)
-# ============================================================
-
-def monitorar_sinais():
-    """Função de monitoramento para debug"""
-    while True:
-        if sinais_ativos:
-            print(f"\n[{datetime.now().strftime('%H:%M:%S')}] Sinais ativos: {len(sinais_ativos)}")
-            for symbol, item in sinais_ativos.items():
-                tempo_restante = 900 - (datetime.now() - item["timestamp"]).total_seconds()
-                if tempo_restante > 0:
-                    print(f"  - {symbol}: {item['dados']['sinal']} (expira em {int(tempo_restante//60)}min)")
-        time.sleep(60)
-
-# Iniciar monitoramento (opcional, descomente se quiser)
-# threading.Thread(target=monitorar_sinais, daemon=True).start()
+@app.post("/confirmar")
+async def confirmar_sinal(sinal: dict):
+    """Confirma um sinal com WIN/LOSS e mantém o horário original"""
+    h = carregar_historico()
+    
+    # Preserva o horário original se existir
+    if "horario_confirmacao" not in sinal:
+        sinal["horario_confirmacao"] = datetime.now().strftime("%H:%M:%S")
+    if "data_completa" not in sinal:
+        sinal["data_completa"] = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
+    
+    sinal["data_confirmacao"] = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
+    
+    h.append(sinal)
+    salvar_historico(h)
+    return {"ok": True}
