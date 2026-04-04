@@ -1,223 +1,82 @@
-from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse
-from datetime import datetime, timedelta
-import os, json, requests, time, threading
+# ============================================================
+# IMPORTAÇÕES ADICIONAIS
+# ============================================================
+from tradingview_ta import TA_Handler, Interval, Exchange
 
 # ============================================================
-# INICIALIZAÇÃO DO FASTAPI (DEVE VIR PRIMEIRO - CRÍTICO!)
-# ============================================================
-app = FastAPI(title="Valverde Trade IA")
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True,
-                   allow_methods=["*"], allow_headers=["*"])
-
-# ============================================================
-# CATÁLOGO DE ATIVOS
-# ============================================================
-SYMBOL_CONFIG = {
-    # ── Forex Majors ──
-    "EURUSD=X": {"nome":"EUR/USD","nome_exibicao":"Euro / Dólar",       "tipo":"Forex",       "emoji":"💶","base_fallback":1.085},
-    "USDJPY=X": {"nome":"USD/JPY","nome_exibicao":"Dólar / Iene",       "tipo":"Forex",       "emoji":"💴","base_fallback":149.5},
-    "GBPUSD=X": {"nome":"GBP/USD","nome_exibicao":"Libra / Dólar",      "tipo":"Forex",       "emoji":"💷","base_fallback":1.265},
-    "USDCHF=X": {"nome":"USD/CHF","nome_exibicao":"Dólar / Franco CH",  "tipo":"Forex",       "emoji":"🇨🇭","base_fallback":0.895},
-    "AUDUSD=X": {"nome":"AUD/USD","nome_exibicao":"Dólar Australiano",  "tipo":"Forex",       "emoji":"🦘","base_fallback":0.655},
-    "USDCAD=X": {"nome":"USD/CAD","nome_exibicao":"Dólar / CAD",        "tipo":"Forex",       "emoji":"🍁","base_fallback":1.365},
-    "NZDUSD=X": {"nome":"NZD/USD","nome_exibicao":"Dólar NZ",           "tipo":"Forex",       "emoji":"🥝","base_fallback":0.605},
-    # ── Commodities ──
-    "GC=F":     {"nome":"XAUUSD","nome_exibicao":"Ouro",                "tipo":"Commodities", "emoji":"🥇","base_fallback":2350.0},
-    "SI=F":     {"nome":"XAGUSD","nome_exibicao":"Prata",               "tipo":"Commodities", "emoji":"🥈","base_fallback":28.5},
-    "PL=F":     {"nome":"XPTUSD","nome_exibicao":"Platina",             "tipo":"Commodities", "emoji":"⚗️","base_fallback":960.0},
-    "CL=F":     {"nome":"WTI",   "nome_exibicao":"Petróleo WTI",        "tipo":"Commodities", "emoji":"🛢️","base_fallback":78.0},
-    "BZ=F":     {"nome":"BRENT", "nome_exibicao":"Petróleo Brent",      "tipo":"Commodities", "emoji":"⛽","base_fallback":82.0},
-    "NG=F":     {"nome":"NATGAS","nome_exibicao":"Gás Natural",          "tipo":"Commodities", "emoji":"🔥","base_fallback":2.8},
-    # ── Cripto ──
-    "BTC-USD":  {"nome":"BTC",   "nome_exibicao":"Bitcoin",             "tipo":"Cripto",      "emoji":"₿","base_fallback":66800,"binance":"BTCUSDT"},
-    "ETH-USD":  {"nome":"ETH",   "nome_exibicao":"Ethereum",            "tipo":"Cripto",      "emoji":"⟠","base_fallback":3300, "binance":"ETHUSDT"},
-    # ── Índices Globais ──
-    "^GDAXI":   {"nome":"DAX",   "nome_exibicao":"DAX Alemanha",        "tipo":"Índices",     "emoji":"🇩🇪","base_fallback":18200},
-    "^FTSE":    {"nome":"FTSE100","nome_exibicao":"FTSE 100 UK",        "tipo":"Índices",     "emoji":"🇬🇧","base_fallback":8200},
-    "^N225":    {"nome":"NIKKEI","nome_exibicao":"Nikkei 225",          "tipo":"Índices",     "emoji":"🇯🇵","base_fallback":38500},
-    "^GSPC":    {"nome":"SP500", "nome_exibicao":"S&P 500",             "tipo":"Índices",     "emoji":"🇺🇸","base_fallback":5200},
-    "^IXIC":    {"nome":"NASDAQ","nome_exibicao":"NASDAQ 100",          "tipo":"Índices",     "emoji":"💻","base_fallback":16400},
-    "^DJI":     {"nome":"DOW30", "nome_exibicao":"Dow Jones",           "tipo":"Índices",     "emoji":"📈","base_fallback":39000},
-    # ── Ações ──
-    "AAPL":     {"nome":"AAPL",  "nome_exibicao":"Apple",               "tipo":"Ações",       "emoji":"🍎","base_fallback":220},
-    "NVDA":     {"nome":"NVDA",  "nome_exibicao":"NVIDIA",              "tipo":"Ações",       "emoji":"🎮","base_fallback":120},
-}
-
-# ATR multipliers por tipo
-ATR_MULTIPLIER = {
-    "Forex":       {"stop": 1.5, "tp": 2.5},
-    "Cripto":      {"stop": 2.5, "tp": 4.0},
-    "Commodities": {"stop": 2.0, "tp": 3.5},
-    "Índices":     {"stop": 1.8, "tp": 3.0},
-    "Ações":       {"stop": 1.5, "tp": 2.5},
-}
-
-SCORE_MINIMO   = 65
-HISTORICO_FILE = "historico_sinais.json"
-
-# ============================================================
-# SISTEMA DE EXPIRAÇÃO DE SINAIS (15 minutos)
+# FONTES DE DADOS COM TRADINGVIEW COMO PRINCIPAL
 # ============================================================
 
-sinais_ativos = {}  # {symbol: {"dados": sinal, "timestamp": datetime}}
-
-def carregar_historico():
-    if os.path.exists(HISTORICO_FILE):
-        with open(HISTORICO_FILE, "r") as f:
-            return json.load(f)
-    return []
-
-def salvar_historico(h):
-    with open(HISTORICO_FILE, "w") as f:
-        json.dump(h, f, indent=2)
-
-def mover_sinal_para_historico(symbol, sinal_data):
-    historico = carregar_historico()
-    sinal_data["data_confirmacao"] = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
-    sinal_data["status"] = "expirado"
-    sinal_data["motivo"] = "Tempo limite de 15 minutos excedido"
-    historico.append(sinal_data)
-    salvar_historico(historico)
-    if symbol in sinais_ativos:
-        del sinais_ativos[symbol]
-
-def verificar_sinais_expirados():
-    while True:
-        try:
-            agora = datetime.now()
-            expirados = []
-            for symbol, item in sinais_ativos.items():
-                tempo_passado = (agora - item["timestamp"]).total_seconds()
-                if tempo_passado > 900:
-                    expirados.append((symbol, item["dados"]))
-            for symbol, sinal in expirados:
-                mover_sinal_para_historico(symbol, sinal)
-            time.sleep(30)
-        except Exception as e:
-            print(f"Erro: {e}")
-            time.sleep(60)
-
-# Inicia thread de verificação
-threading.Thread(target=verificar_sinais_expirados, daemon=True).start()
-
-# ============================================================
-# INDICADORES TÉCNICOS
-# ============================================================
-
-def calcular_ema(closes, periodo):
-    if len(closes) < periodo:
-        return closes[-1]
-    k = 2 / (periodo + 1)
-    ema = sum(closes[:periodo]) / periodo
-    for p in closes[periodo:]:
-        ema = p * k + ema * (1 - k)
-    return ema
-
-def calcular_rsi(closes, periodo=14):
-    if len(closes) < periodo + 1:
-        return 50.0
-    g = p = 0.0
-    for i in range(-periodo, 0):
-        d = closes[i] - closes[i-1]
-        if d > 0: g += d
-        else: p += abs(d)
-    if p == 0: return 100.0
-    return round(100 - (100 / (1 + g/p)), 1)
-
-def calcular_macd(closes, fast=12, slow=26, sp=9):
-    if len(closes) < slow + sp:
-        return 0.0, 0.0, 0.0
-    mv = []
-    for i in range(slow - 1, len(closes)):
-        mv.append(calcular_ema(closes[:i+1], fast) - calcular_ema(closes[:i+1], slow))
-    if len(mv) < sp:
-        return mv[-1], mv[-1], 0.0
-    ml = mv[-1]
-    sl = calcular_ema(mv, sp)
-    return round(ml, 6), round(sl, 6), round(ml - sl, 6)
-
-def calcular_bollinger(closes, periodo=20, dev=2):
-    if len(closes) < periodo:
-        p = closes[-1]
-        return p, p, p
-    r = closes[-periodo:]
-    ma = sum(r) / periodo
-    std = (sum((c - ma)**2 for c in r) / periodo) ** 0.5
-    return round(ma + dev*std, 6), round(ma, 6), round(ma - dev*std, 6)
-
-def calcular_atr(closes, periodo=14):
-    if len(closes) < 2:
-        return closes[-1] * 0.005
-    v = [abs(closes[i] - closes[i-1]) for i in range(max(-periodo, -(len(closes)-1)), 0)]
-    return sum(v)/len(v) if v else closes[-1] * 0.005
-
-def calcular_volume_ratio(volumes, periodo=20):
-    if not volumes or len(volumes) < 2:
-        return 1.0
-    media = sum(volumes[-periodo-1:-1]) / min(periodo, len(volumes)-1)
-    return round(volumes[-1] / media, 2) if media else 1.0
-
-def calcular_forca(rsi, macd_hist, sinal):
-    if sinal == "COMPRA":
-        rsi_f = max(0, (50 - rsi) / 50 * 100)
-        mac_f = 100 if macd_hist > 0 else 30
-    elif sinal == "VENDA":
-        rsi_f = max(0, (rsi - 50) / 50 * 100)
-        mac_f = 100 if macd_hist < 0 else 30
-    else:
-        rsi_f = mac_f = 50
-    return round(rsi_f * 0.6 + mac_f * 0.4, 1)
-
-def calcular_score(rsi, macd_hist, preco, bb_upper, bb_lower, sinal, volume_ratio, mtf_ok):
-    score = 0
-    if sinal == "COMPRA":
-        if rsi < 30: score += 30
-        elif rsi < 40: score += 22
-        elif rsi < 50: score += 12
-    elif sinal == "VENDA":
-        if rsi > 70: score += 30
-        elif rsi > 60: score += 22
-        elif rsi > 50: score += 12
-    if sinal == "COMPRA" and macd_hist > 0: score += 25
-    elif sinal == "VENDA" and macd_hist < 0: score += 25
-    elif abs(macd_hist) < preco * 0.0005: score += 10
-    bw = bb_upper - bb_lower
-    if bw > 0:
-        pos = (preco - bb_lower) / bw
-        if sinal == "COMPRA":
-            if pos <= 0.1: score += 25
-            elif pos <= 0.3: score += 15
-            elif pos <= 0.5: score += 8
-        elif sinal == "VENDA":
-            if pos >= 0.9: score += 25
-            elif pos >= 0.7: score += 15
-            elif pos >= 0.5: score += 8
-    if volume_ratio >= 1.5: score += 10
-    elif volume_ratio >= 1.2: score += 7
-    elif volume_ratio >= 1.0: score += 4
-    if mtf_ok: score += 10
-    return min(score, 100)
-
-# ============================================================
-# FONTES DE DADOS
-# ============================================================
-
-def fetch_binance(symbol, interval, limit=100):
-    bs = SYMBOL_CONFIG.get(symbol, {}).get("binance")
-    if not bs: return None
+def fetch_tradingview(symbol, interval):
+    """Busca dados do TradingView"""
     try:
-        url = f"https://api.binance.com/api/v3/klines?symbol={bs}&interval={interval}&limit={limit}"
-        r = requests.get(url, timeout=10)
-        if r.status_code == 200:
-            data = r.json()
-            return {"closes": [float(c[4]) for c in data], "volumes": [float(c[5]) for c in data], "fonte": "binance"}
+        # Mapeamento de símbolos para TradingView
+        tv_symbols = {
+            "EURUSD=X": {"symbol": "EURUSD", "exchange": "FX_IDC", "screener": "forex"},
+            "USDJPY=X": {"symbol": "USDJPY", "exchange": "FX_IDC", "screener": "forex"},
+            "GBPUSD=X": {"symbol": "GBPUSD", "exchange": "FX_IDC", "screener": "forex"},
+            "USDCHF=X": {"symbol": "USDCHF", "exchange": "FX_IDC", "screener": "forex"},
+            "AUDUSD=X": {"symbol": "AUDUSD", "exchange": "FX_IDC", "screener": "forex"},
+            "USDCAD=X": {"symbol": "USDCAD", "exchange": "FX_IDC", "screener": "forex"},
+            "NZDUSD=X": {"symbol": "NZDUSD", "exchange": "FX_IDC", "screener": "forex"},
+            "GC=F": {"symbol": "GOLD", "exchange": "TVC", "screener": "commodity"},
+            "SI=F": {"symbol": "SILVER", "exchange": "TVC", "screener": "commodity"},
+            "CL=F": {"symbol": "WTI", "exchange": "TVC", "screener": "commodity"},
+            "BZ=F": {"symbol": "BRENT", "exchange": "TVC", "screener": "commodity"},
+            "NG=F": {"symbol": "NATGAS", "exchange": "TVC", "screener": "commodity"},
+            "BTC-USD": {"symbol": "BTCUSDT", "exchange": "BINANCE", "screener": "crypto"},
+            "ETH-USD": {"symbol": "ETHUSDT", "exchange": "BINANCE", "screener": "crypto"},
+            "^GDAXI": {"symbol": "DAX", "exchange": "INDEX", "screener": "cfd"},
+            "^FTSE": {"symbol": "UK100", "exchange": "INDEX", "screener": "cfd"},
+            "^N225": {"symbol": "NIKKEI", "exchange": "INDEX", "screener": "cfd"},
+            "^GSPC": {"symbol": "SPX", "exchange": "INDEX", "screener": "cfd"},
+            "^IXIC": {"symbol": "IXIC", "exchange": "INDEX", "screener": "cfd"},
+            "^DJI": {"symbol": "DJI", "exchange": "INDEX", "screener": "cfd"},
+            "AAPL": {"symbol": "AAPL", "exchange": "NASDAQ", "screener": "america"},
+            "NVDA": {"symbol": "NVDA", "exchange": "NASDAQ", "screener": "america"},
+        }
+        
+        tv_config = tv_symbols.get(symbol)
+        if not tv_config:
+            return None
+            
+        # Mapeamento de intervalos
+        interval_map = {
+            "5m": Interval.INTERVAL_5_MINUTES,
+            "15m": Interval.INTERVAL_15_MINUTES,
+            "30m": Interval.INTERVAL_30_MINUTES,
+            "1h": Interval.INTERVAL_1_HOUR,
+            "4h": Interval.INTERVAL_4_HOURS,
+            "1d": Interval.INTERVAL_1_DAY,
+        }
+        
+        tv_interval = interval_map.get(interval, Interval.INTERVAL_15_MINUTES)
+        
+        handler = TA_Handler(
+            symbol=tv_config["symbol"],
+            exchange=tv_config["exchange"],
+            screener=tv_config["screener"],
+            interval=tv_interval,
+            timeout=10
+        )
+        
+        # Buscar análise técnica
+        analysis = handler.get_analysis()
+        
+        if analysis and analysis.indicators:
+            # Tentar buscar dados de candle via scraping ou usar indicadores
+            # Para dados completos, ainda vamos usar Yahoo como complemento
+            return {
+                "fonte": "tradingview",
+                "indicators": analysis.indicators,
+                "summary": analysis.summary
+            }
     except Exception as e:
-        print(f"Binance error: {e}")
+        print(f"TradingView error for {symbol}: {e}")
     return None
 
-def fetch_yahoo(symbol, interval):
+def fetch_yahoo_with_tv_fallback(symbol, interval):
+    """Busca dados do Yahoo mas usa TradingView para indicadores se possível"""
     try:
         yi = "1h" if interval == "4h" else interval
         rng = {"5m":"5d","15m":"5d","30m":"5d","1h":"30d","4h":"60d","1d":"6mo"}.get(interval, "5d")
@@ -232,95 +91,189 @@ def fetch_yahoo(symbol, interval):
                 if closes:
                     if not volumes or max(volumes) == 0:
                         volumes = [1000000.0] * len(closes)
-                    return {"closes": closes, "volumes": volumes, "fonte": "yahoo"}
+                    
+                    # Tentar obter indicadores do TradingView para complementar
+                    tv_data = fetch_tradingview(symbol, interval)
+                    
+                    return {
+                        "closes": closes, 
+                        "volumes": volumes, 
+                        "fonte": "yahoo",
+                        "tv_indicators": tv_data.get("indicators") if tv_data else None,
+                        "tv_summary": tv_data.get("summary") if tv_data else None
+                    }
     except Exception as e:
         print(f"Yahoo error: {e}")
     return None
 
-def fetch_fallback(symbol, interval):
-    import random
-    base = SYMBOL_CONFIG.get(symbol, {}).get("base_fallback", 100.0)
-    random.seed(int(time.time()/300) + hash(symbol + interval) % 9999)
-    closes = [base * (1 + random.uniform(-0.015, 0.015)) for _ in range(100)]
-    volumes = [random.uniform(500000, 2000000) for _ in range(100)]
-    return {"closes": closes, "volumes": volumes, "fonte": "simulado"}
-
 def fetch_candles(symbol, interval):
+    """Busca candles com prioridade para TradingView via Yahoo + indicadores"""
+    # Primeiro tenta Yahoo (dados de preço) + TradingView (indicadores)
+    d = fetch_yahoo_with_tv_fallback(symbol, interval)
+    if d and d.get("closes"):
+        return d
+    
+    # Fallback para Binance se aplicável
     if SYMBOL_CONFIG.get(symbol, {}).get("binance"):
         d = fetch_binance(symbol, interval)
-        if d: return d
-    d = fetch_yahoo(symbol, interval)
-    if d: return d
+        if d: 
+            d["fonte"] = "binance"
+            return d
+    
+    # Fallback final simulado
     return fetch_fallback(symbol, interval)
 
 # ============================================================
-# ANÁLISE PRINCIPAL
+# FUNÇÃO DE ANÁLISE MODIFICADA PARA USAR TRADINGVIEW
 # ============================================================
 
-def analisar_closes(symbol, closes, volumes):
-    cfg = SYMBOL_CONFIG.get(symbol, {})
-    tipo = cfg.get("tipo", "Ações")
-    p = closes[-1]
-    rsi = calcular_rsi(closes)
-    _, _, macd_hist = calcular_macd(closes)
-    bbu, _, bbl = calcular_bollinger(closes)
-    atr = calcular_atr(closes)
-    vr = calcular_volume_ratio(volumes)
-    ema9 = calcular_ema(closes, 9)
-    ema21 = calcular_ema(closes, 21)
-    ema50 = calcular_ema(closes, 50)
-    if ema9 > ema21 > ema50: tendencia = "ALTA"
-    elif ema9 < ema21 < ema50: tendencia = "BAIXA"
-    else: tendencia = "LATERAL"
-    if rsi < 35 and macd_hist > 0 and tendencia != "BAIXA": sinal_bruto = "COMPRA"
-    elif rsi > 65 and macd_hist < 0 and tendencia != "ALTA": sinal_bruto = "VENDA"
-    elif rsi < 30: sinal_bruto = "COMPRA"
-    elif rsi > 70: sinal_bruto = "VENDA"
-    else: sinal_bruto = "NEUTRO"
-    return {"preco": round(p, 6), "rsi": rsi, "macd_hist": macd_hist, "bb_upper": bbu, "bb_lower": bbl, "atr": atr, "volume_ratio": vr, "ema9": round(ema9, 6), "ema21": round(ema21, 6), "ema50": round(ema50, 6), "tendencia": tendencia, "sinal_bruto": sinal_bruto, "tipo": tipo}
-
-def get_analysis(symbol, interval="15m"):
+def get_analysis_with_tradingview(symbol, interval="15m"):
+    """Análise usando TradingView como fonte primária de indicadores"""
     dados = fetch_candles(symbol, interval)
-    closes = dados["closes"]
-    vols = dados["volumes"]
-    fonte = dados["fonte"]
-    if len(closes) < 35: return None
+    closes = dados.get("closes", [])
+    vols = dados.get("volumes", [])
+    fonte = dados.get("fonte", "desconhecida")
+    tv_indicators = dados.get("tv_indicators", {})
+    tv_summary = dados.get("tv_summary", {})
+    
+    if len(closes) < 35:
+        return None
+    
+    # Calcular indicadores técnicos locais
     a = analisar_closes(symbol, closes, vols)
     tipo = a["tipo"]
     p = a["preco"]
+    
+    # Se tiver dados do TradingView, usar para melhorar a análise
+    if tv_indicators:
+        # Atualizar RSI e MACD com valores do TradingView se disponíveis
+        if "RSI" in tv_indicators:
+            a["rsi"] = round(tv_indicators["RSI"], 1)
+        if "MACD.macd" in tv_indicators and "MACD.signal" in tv_indicators:
+            macd_line = tv_indicators["MACD.macd"]
+            macd_signal = tv_indicators["MACD.signal"]
+            a["macd_hist"] = round(macd_line - macd_signal, 6)
+        
+        # Adicionar informações do TradingView
+        a["tv_recommendation"] = tv_summary.get("RECOMMENDATION", "NEUTRAL")
+        a["tv_buy"] = tv_summary.get("BUY", 0)
+        a["tv_sell"] = tv_summary.get("SELL", 0)
+        a["tv_neutral"] = tv_summary.get("NEUTRAL", 0)
+    
+    # ── Multi-Timeframe ──
     tf_up = {"5m":"15m","15m":"1h","30m":"1h","1h":"4h","4h":"1d","1d":"1d"}.get(interval, "1h")
     mtf_ok = True
     tend_s = "LATERAL"
     if tf_up != interval:
         ds = fetch_candles(symbol, tf_up)
-        if ds and len(ds["closes"]) >= 35:
-            as_ = analisar_closes(symbol, ds["closes"], ds["volumes"])
+        if ds and len(ds.get("closes", [])) >= 35:
+            as_ = analisar_closes(symbol, ds["closes"], ds.get("volumes", []))
             tend_s = as_["tendencia"]
-            if a["sinal_bruto"] == "COMPRA" and tend_s == "BAIXA": mtf_ok = False
-            if a["sinal_bruto"] == "VENDA" and tend_s == "ALTA": mtf_ok = False
-    score = calcular_score(a["rsi"], a["macd_hist"], p, a["bb_upper"], a["bb_lower"], a["sinal_bruto"], a["volume_ratio"], mtf_ok)
+            if a["sinal_bruto"] == "COMPRA" and tend_s == "BAIXA":
+                mtf_ok = False
+            if a["sinal_bruto"] == "VENDA" and tend_s == "ALTA":
+                mtf_ok = False
+    
+    # Calcular score com possível ajuste do TradingView
+    score = calcular_score(
+        a["rsi"], a["macd_hist"], p, a["bb_upper"], a["bb_lower"],
+        a["sinal_bruto"], a["volume_ratio"], mtf_ok
+    )
+    
+    # Ajustar score baseado na recomendação do TradingView
+    if tv_summary:
+        if tv_summary.get("RECOMMENDATION") == "STRONG_BUY" and a["sinal_bruto"] == "COMPRA":
+            score = min(100, score + 10)
+        elif tv_summary.get("RECOMMENDATION") == "STRONG_SELL" and a["sinal_bruto"] == "VENDA":
+            score = min(100, score + 10)
+    
     sinal = a["sinal_bruto"] if (score >= SCORE_MINIMO and mtf_ok) else "NEUTRO"
     forca = calcular_forca(a["rsi"], a["macd_hist"], sinal)
     confianca = round(50 + score / 2, 1) if sinal != "NEUTRO" else round(score * 0.6, 1)
+    
     mult = ATR_MULTIPLIER.get(tipo, ATR_MULTIPLIER["Ações"])
     atr = a["atr"]
     sl = round(p - mult["stop"] * atr, 6) if sinal == "COMPRA" else round(p + mult["stop"] * atr, 6)
     tp = round(p + mult["tp"] * atr, 6) if sinal == "COMPRA" else round(p - mult["tp"] * atr, 6)
-    return {"preco": p, "rsi": a["rsi"], "macd_hist": a["macd_hist"], "bb_upper": a["bb_upper"], "bb_lower": a["bb_lower"], "volume_ratio": a["volume_ratio"], "ema9": a["ema9"], "ema21": a["ema21"], "ema50": a["ema50"], "tendencia": a["tendencia"], "tendencia_sup": tend_s, "sinal": sinal, "score": score, "forca": forca, "confianca": confianca, "mtf_ok": mtf_ok, "stop_loss": sl, "take_profit": tp, "fonte": fonte}
+    
+    result = {
+        "preco": p,
+        "rsi": a["rsi"],
+        "macd_hist": a["macd_hist"],
+        "bb_upper": a["bb_upper"],
+        "bb_lower": a["bb_lower"],
+        "volume_ratio": a["volume_ratio"],
+        "ema9": a["ema9"],
+        "ema21": a["ema21"],
+        "ema50": a["ema50"],
+        "tendencia": a["tendencia"],
+        "tendencia_sup": tend_s,
+        "sinal": sinal,
+        "score": score,
+        "forca": forca,
+        "confianca": confianca,
+        "mtf_ok": mtf_ok,
+        "stop_loss": sl,
+        "take_profit": tp,
+        "fonte": f"tradingview+{fonte}" if tv_indicators else fonte,
+    }
+    
+    # Adicionar dados do TradingView se disponíveis
+    if tv_indicators:
+        result["tv_recommendation"] = a.get("tv_recommendation", "NEUTRAL")
+        result["tv_buy"] = a.get("tv_buy", 0)
+        result["tv_sell"] = a.get("tv_sell", 0)
+    
+    return result
 
-# ============================================================
-# PROCESSAMENTO DE SINAIS
-# ============================================================
-
+# Atualizar a função de processamento para usar a nova análise
 def processar_e_armazenar_sinais():
+    """Processa todos os ativos usando TradingView como fonte principal"""
     for symbol, cfg in SYMBOL_CONFIG.items():
-        analysis = get_analysis(symbol, "15m")
+        analysis = get_analysis_with_tradingview(symbol, "15m")
         if not analysis or analysis["sinal"] == "NEUTRO":
             if symbol in sinais_ativos:
                 del sinais_ativos[symbol]
             continue
+        
         agora = datetime.now()
-        sinal_data = {"symbol": symbol, "nome": cfg["nome"], "nome_exibicao": cfg["nome_exibicao"], "emoji": cfg["emoji"], "tipo": cfg["tipo"], "timeframe": "15m", "preco": analysis["preco"], "sinal": analysis["sinal"], "score": analysis["score"], "forca": analysis["forca"], "confianca": analysis["confianca"], "rsi": analysis["rsi"], "macd_hist": analysis["macd_hist"], "bb_upper": analysis["bb_upper"], "bb_lower": analysis["bb_lower"], "volume_ratio": analysis["volume_ratio"], "tendencia": analysis["tendencia"], "tendencia_sup": analysis["tendencia_sup"], "mtf_ok": analysis["mtf_ok"], "stop_loss": analysis["stop_loss"], "take_profit": analysis["take_profit"], "entry": analysis["preco"], "fonte": analysis["fonte"], "data": agora.strftime("%d/%m %H:%M"), "data_completa": agora.strftime("%d/%m/%Y %H:%M:%S"), "horario_confirmacao": agora.strftime("%H:%M:%S"), "timestamp_criacao": agora.isoformat()}
+        
+        sinal_data = {
+            "symbol": symbol,
+            "nome": cfg["nome"],
+            "nome_exibicao": cfg["nome_exibicao"],
+            "emoji": cfg["emoji"],
+            "tipo": cfg["tipo"],
+            "timeframe": "15m",
+            "preco": analysis["preco"],
+            "sinal": analysis["sinal"],
+            "score": analysis["score"],
+            "forca": analysis["forca"],
+            "confianca": analysis["confianca"],
+            "rsi": analysis["rsi"],
+            "macd_hist": analysis["macd_hist"],
+            "bb_upper": analysis["bb_upper"],
+            "bb_lower": analysis["bb_lower"],
+            "volume_ratio": analysis["volume_ratio"],
+            "tendencia": analysis["tendencia"],
+            "tendencia_sup": analysis["tendencia_sup"],
+            "mtf_ok": analysis["mtf_ok"],
+            "stop_loss": analysis["stop_loss"],
+            "take_profit": analysis["take_profit"],
+            "entry": analysis["preco"],
+            "fonte": analysis["fonte"],
+            "data": agora.strftime("%d/%m %H:%M"),
+            "data_completa": agora.strftime("%d/%m/%Y %H:%M:%S"),
+            "horario_confirmacao": agora.strftime("%H:%M:%S"),
+            "timestamp_criacao": agora.isoformat()
+        }
+        
+        # Adicionar dados do TradingView se disponíveis
+        if "tv_recommendation" in analysis:
+            sinal_data["tv_recommendation"] = analysis["tv_recommendation"]
+            sinal_data["tv_buy"] = analysis["tv_buy"]
+            sinal_data["tv_sell"] = analysis["tv_sell"]
+        
         if symbol in sinais_ativos:
             sinal_existente = sinais_ativos[symbol]["dados"]
             if sinal_existente["sinal"] != sinal_data["sinal"]:
@@ -328,110 +281,3 @@ def processar_e_armazenar_sinais():
                 sinais_ativos[symbol] = {"dados": sinal_data, "timestamp": agora}
         else:
             sinais_ativos[symbol] = {"dados": sinal_data, "timestamp": agora}
-
-# ============================================================
-# ENDPOINTS DA API
-# ============================================================
-
-@app.get("/api/sinais")
-async def get_sinais():
-    processar_e_armazenar_sinais()
-    sinais_retorno = []
-    for symbol, item in sinais_ativos.items():
-        sinal = item["dados"].copy()
-        timestamp_criacao = item["timestamp"]
-        tempo_passado = (datetime.now() - timestamp_criacao).total_seconds()
-        tempo_restante = max(0, 900 - tempo_passado)
-        sinal["tempo_restante"] = int(tempo_restante)
-        sinal["tempo_restante_formatado"] = f"{int(tempo_restante // 60)}min {int(tempo_restante % 60)}s"
-        sinal["expiracao"] = (timestamp_criacao + timedelta(seconds=900)).strftime("%H:%M:%S")
-        if "horario_confirmacao" not in sinal:
-            sinal["horario_confirmacao"] = timestamp_criacao.strftime("%H:%M:%S")
-        if "data_completa" not in sinal:
-            sinal["data_completa"] = timestamp_criacao.strftime("%d/%m/%Y %H:%M:%S")
-        sinais_retorno.append(sinal)
-    return sinais_retorno
-
-@app.get("/historico")
-async def get_historico():
-    return carregar_historico()
-
-@app.post("/confirmar")
-async def confirmar_sinal(sinal: dict):
-    h = carregar_historico()
-    if "horario_confirmacao" not in sinal:
-        sinal["horario_confirmacao"] = datetime.now().strftime("%H:%M:%S")
-    if "data_completa" not in sinal:
-        sinal["data_completa"] = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
-    sinal["data_confirmacao"] = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
-    h.append(sinal)
-    salvar_historico(h)
-    return {"ok": True}
-
-@app.get("/")
-async def root():
-    html = """<!DOCTYPE html>
-<html lang="pt-br">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width,initial-scale=1.0">
-<title>Valverde Trade IA</title>
-<link href="https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=DM+Sans:wght@300;400;500;600&display=swap" rel="stylesheet">
-<style>
-:root{--bg:#060a17;--bg2:#0c1122;--bg3:#101728;--border:rgba(255,255,255,0.06);--text:#dde4f0;--muted:#4e6080;--accent:#38bdf8;--buy:#22c55e;--sell:#ef4444;--warn:#f59e0b}
-*{margin:0;padding:0;box-sizing:border-box}
-body{font-family:'DM Sans',sans-serif;background:var(--bg);color:var(--text);padding:20px}
-.wrap{max-width:1380px;margin:0 auto}
-.header{display:flex;justify-content:space-between;align-items:center;margin-bottom:20px;padding-bottom:10px;border-bottom:1px solid var(--border)}
-.logo{font-family:'Space Mono',monospace;font-size:1.1rem;color:var(--accent)}
-.refresh-btn{background:transparent;border:1px solid rgba(255,255,255,0.12);color:var(--text);padding:5px 12px;border-radius:6px;cursor:pointer}
-.tabs{display:flex;gap:5px;flex-wrap:wrap;margin-bottom:15px}
-.tab{padding:5px 12px;border-radius:20px;cursor:pointer;border:1px solid var(--border);background:transparent;color:var(--muted)}
-.tab.active{background:rgba(56,189,248,.12);border-color:var(--accent);color:var(--accent)}
-.grid{display:grid;grid-template-columns:1fr 1fr;gap:15px}
-@media(max-width:900px){.grid{grid-template-columns:1fr}}
-.panel{background:var(--bg2);border:1px solid var(--border);border-radius:14px;overflow:hidden}
-.panel-head{padding:12px 16px;border-bottom:1px solid var(--border);background:var(--bg3);display:flex;justify-content:space-between}
-.panel-body{padding:12px;max-height:80vh;overflow-y:auto}
-.sig-card{background:var(--bg3);border:1px solid var(--border);border-radius:11px;padding:12px;margin-bottom:9px;cursor:pointer}
-.sig-card.buy{border-left:3px solid var(--buy)}
-.sig-card.sell{border-left:3px solid var(--sell)}
-.sig-name{font-weight:600;display:flex;align-items:center;gap:8px}
-.sig-code{font-family:'Space Mono',monospace;font-size:0.6rem;background:rgba(255,255,255,0.05);padding:2px 6px;border-radius:4px}
-.badge{padding:3px 9px;border-radius:5px;font-size:0.7rem;font-weight:700}
-.badge.buy{background:rgba(34,197,94,.14);color:var(--buy)}
-.badge.sell{background:rgba(239,68,68,.14);color:var(--sell)}
-.sig-time{margin-top:8px;padding-top:6px;border-top:1px solid var(--border);font-size:0.6rem;color:var(--muted)}
-.sig-expiry{font-size:0.6rem;color:var(--warn);margin-top:4px}
-.hist-item{background:var(--bg3);border:1px solid var(--border);border-radius:9px;padding:10px;margin-bottom:7px}
-.empty{text-align:center;padding:40px;color:var(--muted)}
-</style>
-</head>
-<body>
-<div class="wrap">
-<div class="header"><span class="logo">VALVERDE TRADE IA v3.0</span><button class="refresh-btn" onclick="carregarTudo()">↻ ATUALIZAR</button></div>
-<div class="tabs"><button class="tab active" onclick="setTab('Todos')">Todos</button><button class="tab" onclick="setTab('Forex')">Forex</button><button class="tab" onclick="setTab('Commodities')">Commodities</button><button class="tab" onclick="setTab('Cripto')">Cripto</button><button class="tab" onclick="setTab('Índices')">Índices</button><button class="tab" onclick="setTab('Ações')">Ações</button></div>
-<div class="grid"><div class="panel"><div class="panel-head"><span>Sinais Ativos</span><span id="count-sinais">—</span></div><div class="panel-body" id="sinais-container">Carregando...</div></div><div class="panel"><div class="panel-head"><span>Histórico</span><span id="count-hist">—</span></div><div class="panel-body" id="historico-container">Carregando...</div></div></div></div>
-<script>
-let todosSinais=[],catAtual='Todos';
-function fmtPreco(v,t){if(v==null)return'—';let n=Number(v);if(t==='Forex')return n.toFixed(5);if(n>10000)return n.toLocaleString();return n.toFixed(2)}
-function renderSinais(){let lista=catAtual==='Todos'?todosSinais:todosSinais.filter(s=>s.tipo===catAtual);document.getElementById('count-sinais').innerHTML=lista.length;let html=lista.map(s=>`<div class="sig-card ${s.sinal==='COMPRA'?'buy':'sell'}" onclick='confirmar(${JSON.stringify(s)})'><div style="display:flex;justify-content:space-between;margin-bottom:10px"><div><div class="sig-name"><span>${s.emoji}</span><span>${s.nome_exibicao}</span><span class="sig-code">${s.nome}</span></div><div style="font-size:0.6rem;color:var(--muted)">${s.tipo}</div></div><span class="badge ${s.sinal==='COMPRA'?'buy':'sell'}">${s.sinal==='COMPRA'?'▲ COMPRA':'▼ VENDA'}</span></div><div>Entry: ${fmtPreco(s.preco,s.tipo)} | Stop: ${fmtPreco(s.stop_loss,s.tipo)} | TP: ${fmtPreco(s.take_profit,s.tipo)}</div><div>Score: ${s.score} | Conf: ${s.confianca}%</div><div class="sig-time">🕐 Confirmado: ${s.horario_confirmacao}</div><div class="sig-expiry">⏱ Expira em: ${s.tempo_restante_formatado}</div></div>`).join('');document.getElementById('sinais-container').innerHTML=html||'<div class="empty">Sem sinais</div>';}
-function renderHistorico(hist){let html=hist.slice().reverse().map(h=>`<div class="hist-item"><div><b>${h.emoji} ${h.nome_exibicao}</b> <span style="font-family:monospace;font-size:0.55rem">${h.nome}</span> - ${h.sinal}</div><div>Entry: ${fmtPreco(h.entry,h.tipo)} | SL: ${fmtPreco(h.stop_loss,h.tipo)} | TP: ${fmtPreco(h.take_profit,h.tipo)}</div><div class="sig-time">🕐 Confirmado: ${h.horario_confirmacao} | ${h.status==='expirado'?'⚠ Expirado':h.confirmado==='win'?'✓ WIN':'◌ Pend'}</div></div>`).join('');document.getElementById('historico-container').innerHTML=html||'<div class="empty">Sem histórico</div>';document.getElementById('count-hist').innerHTML=hist.length;}
-async function carregarSinais(){let r=await fetch('/api/sinais');todosSinais=await r.json();renderSinais();}
-async function carregarHistorico(){let r=await fetch('/historico');renderHistorico(await r.json());}
-async function confirmar(s){let res=confirm(`Confirmar ${s.nome_exibicao} (${s.nome}) - ${s.sinal}?\\nOK = WIN | Cancelar = LOSS`);if(res!==null){await fetch('/confirmar',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({...s,confirmado:res?'win':'loss'})});carregarHistorico();}}
-function setTab(cat){catAtual=cat;document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));event.target.classList.add('active');renderSinais();}
-async function carregarTudo(){await Promise.all([carregarSinais(),carregarHistorico()]);}
-carregarTudo();setInterval(carregarSinais,300000);
-</script>
-</body>
-</html>"""
-    return HTMLResponse(content=html)
-
-# ============================================================
-# MAIN
-# ============================================================
-
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
